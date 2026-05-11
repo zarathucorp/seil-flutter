@@ -594,10 +594,10 @@ class SeilLocalizations {
       );
 
   String get startTmuxDefaultPath => _t(
-        en: 'Start tmux session from the default path',
+        en: 'Start tmux session',
         ko: '기본 경로에서 tmux 세션 시작',
-        ja: 'デフォルトパスから tmux セッションを開始',
-        zh: '从默认路径启动 tmux 会话',
+        ja: 'tmux セッションを開始',
+        zh: '启动 tmux 会话',
       );
 
   String get tagSettings => _t(
@@ -838,11 +838,11 @@ class SeilLocalizations {
         zh: '键盘宏设置',
       );
 
-  String keyboardMacroHint(int index) => _t(
-        en: 'Leave empty to send the F$index key.',
-        ko: '비워두면 F$index 키를 보냅니다.',
-        ja: '空にすると F$index キーを送信します。',
-        zh: '留空则发送 F$index 键。',
+  String get keyboardMacroHint => _t(
+        en: 'Type F5 to send a function key.',
+        ko: 'F5처럼 입력하면 Function 키로 전송됩니다.',
+        ja: 'F5 のように入力すると Function キーとして送信されます。',
+        zh: '输入 F5 可作为 Function 键发送。',
       );
 
   String get clear => _t(

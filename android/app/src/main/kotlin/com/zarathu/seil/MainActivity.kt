@@ -1,4 +1,4 @@
-package com.example.seil_mobile
+package com.zarathu.seil
 
 import io.flutter.embedding.android.FlutterActivity
 

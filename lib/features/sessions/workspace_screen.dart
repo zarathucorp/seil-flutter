@@ -1198,12 +1198,17 @@ class _SwitchItemState extends State<_SwitchItem> {
             children: [
               Icon(widget.icon, size: 13, color: foreground),
               const SizedBox(width: 5),
-              Text(
-                widget.label,
-                style: TextStyle(
-                  color: foreground,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  widget.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.visible,
+                  style: TextStyle(
+                    color: foreground,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
               ),
             ],
@@ -1393,7 +1398,7 @@ class _TmuxSessionChooserState extends State<_TmuxSessionChooser> {
                 leading: const Icon(LucideIcons.plus, size: 16),
                 onPressed:
                     state.busy ? null : () => state.selectNewTmuxSession(),
-                child: Text(context.l10n.startTmuxDefaultPath),
+                child: _FittingLabel(context.l10n.startTmuxDefaultPath),
               ),
             ],
           ),
@@ -2570,7 +2575,7 @@ class _TerminalHistoryMoreButton extends StatelessWidget {
           ),
           onPressed: onPressed,
           icon: const Icon(LucideIcons.chevronUp, size: 14),
-          label: Text(context.l10n.loadMoreHistory),
+          label: _FittingLabel(context.l10n.loadMoreHistory),
         ),
       ),
     );
@@ -2934,8 +2939,22 @@ class _MacroKeyRow extends StatelessWidget {
       await onSpecial('F${index + 1}');
       return;
     }
+    final specialKey = _macroSpecialKey(macro);
+    if (specialKey != null) {
+      await onSpecial(specialKey);
+      return;
+    }
     await onLiteral(macro);
   }
+}
+
+String? _macroSpecialKey(String macro) {
+  final normalized = macro.trim().toUpperCase();
+  final functionKey = RegExp(r'^F([1-9]|1[0-2])$').firstMatch(normalized);
+  if (functionKey != null) {
+    return normalized;
+  }
+  return null;
 }
 
 class _KeyButton extends StatelessWidget {
@@ -2959,6 +2978,24 @@ class _KeyButton extends StatelessWidget {
         label: label,
         repeatOnLongPress: true,
         onPressed: () => unawaited(onSend(value)),
+      ),
+    );
+  }
+}
+
+class _FittingLabel extends StatelessWidget {
+  const _FittingLabel(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      child: Text(
+        text,
+        maxLines: 1,
+        overflow: TextOverflow.visible,
       ),
     );
   }
@@ -3022,7 +3059,7 @@ class _KeyboardMacroSettingsScreenState
               textInputAction: TextInputAction.newline,
               decoration: InputDecoration(
                 labelText: 'F${index + 1}',
-                hintText: context.l10n.keyboardMacroHint(index + 1),
+                hintText: context.l10n.keyboardMacroHint,
                 prefixIcon: const Icon(LucideIcons.keyboard),
                 suffixIcon: IconButton(
                   tooltip: context.l10n.clear,
@@ -3200,35 +3237,49 @@ class _CompactGlassButtonState extends State<_CompactGlassButton> {
                           ),
                       ],
               ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  if (widget.busy)
-                    SizedBox(
-                      width: math.max(12, widget.height * .42),
-                      height: math.max(12, widget.height * .42),
-                      child: const CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                  if (widget.icon != null)
-                    Icon(
-                      widget.icon,
-                      size: 13,
-                      color: contentColor,
-                    ),
-                  if (widget.icon != null && widget.label != null)
-                    const SizedBox(width: 5),
-                  if (widget.label != null)
-                    Text(
-                      widget.label!,
-                      style: TextStyle(
-                        color: contentColor,
-                        fontSize: 11,
-                        fontWeight:
-                            inactive ? FontWeight.w600 : FontWeight.w700,
-                      ),
-                    ),
-                ],
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final bounded = constraints.hasBoundedWidth;
+                  final label = widget.label == null
+                      ? null
+                      : FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(
+                            widget.label!,
+                            maxLines: 1,
+                            overflow: TextOverflow.visible,
+                            style: TextStyle(
+                              color: contentColor,
+                              fontSize: 11,
+                              fontWeight:
+                                  inactive ? FontWeight.w600 : FontWeight.w700,
+                            ),
+                          ),
+                        );
+                  return Row(
+                    mainAxisSize: bounded ? MainAxisSize.max : MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      if (widget.busy)
+                        SizedBox(
+                          width: math.max(12, widget.height * .42),
+                          height: math.max(12, widget.height * .42),
+                          child:
+                              const CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      if (widget.icon != null)
+                        Icon(
+                          widget.icon,
+                          size: 13,
+                          color: contentColor,
+                        ),
+                      if (widget.icon != null && widget.label != null)
+                        const SizedBox(width: 5),
+                      if (label != null)
+                        bounded ? Flexible(child: label) : label,
+                    ],
+                  );
+                },
               ),
             ),
           ),
