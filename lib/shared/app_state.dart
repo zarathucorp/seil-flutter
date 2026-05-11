@@ -1,0 +1,1258 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+
+import '../core/settings/app_settings_repository.dart';
+import '../features/auth/auth_repository.dart';
+import '../features/connections/connection_repository.dart';
+import '../features/connections/host_key_repository.dart';
+import '../features/sessions/ssh_session_service.dart';
+import 'models.dart';
+
+class AppState extends ChangeNotifier {
+  AppState({
+    required this.authRepository,
+    required this.connectionRepository,
+    required this.hostKeyRepository,
+    required this.settingsRepository,
+    required this.sshSessionService,
+  });
+
+  final AuthRepository authRepository;
+  final ConnectionRepository connectionRepository;
+  final HostKeyRepository hostKeyRepository;
+  final AppSettingsRepository settingsRepository;
+  final SshSessionService sshSessionService;
+
+  SeilUser? currentUser;
+  List<SavedConnection> connections = [];
+  List<SeilUser> users = [];
+  List<TrustedHostKey> trustedHostKeys = [];
+  List<LiveSshSession> liveSessions = [];
+  final Map<String, RemoteDirectory> sessionDirectories = {};
+  final Map<String, int> sessionPaneIndexes = {};
+  final Map<String, String> _sessionNames = {};
+  final Map<String, SessionTag> _tmuxTags = {};
+  final Map<String, TmuxCaptureFrame> _terminalFrames = {};
+  final Map<String, _CachedDirectory> _directoryCache = {};
+  final Map<String, List<String>> _directoryBackStacks = {};
+  final Map<String, String> _reconnectSecrets = {};
+  LiveSshSession? activeSession;
+  RemoteDirectory? activeDirectory;
+  bool needsBootstrap = false;
+  bool busy = false;
+  bool reconnecting = false;
+  bool loginPasswordEnabled = false;
+  bool lowEndModeEnabled = false;
+  String appLanguageCode = AppSettingsRepository.systemLanguageCode;
+  List<String> keyboardMacros = List<String>.filled(
+    AppSettingsRepository.keyboardMacroCount,
+    '',
+  );
+  String? connectingConnectionId;
+  String? errorMessage;
+  bool errorShowsPopup = true;
+  int errorSerial = 0;
+  int _busyDepth = 0;
+  Future<void> _sessionStartTail = Future.value();
+
+  static const _directoryCacheTtl = Duration(seconds: 20);
+  static const _reconnectErrorDelay = Duration(seconds: 5);
+
+  int get activePaneIndex {
+    final session = activeSession;
+    if (session == null) {
+      return 0;
+    }
+    return sessionPaneIndexes[terminalFrameKey(session)] ?? 0;
+  }
+
+  Future<void> initialize() async {
+    loginPasswordEnabled = await settingsRepository.isLoginPasswordEnabled();
+    lowEndModeEnabled = await settingsRepository.isLowEndModeEnabled();
+    appLanguageCode = await settingsRepository.loadAppLanguageCode();
+    keyboardMacros = await settingsRepository.loadKeyboardMacros();
+    needsBootstrap = !(await authRepository.hasUsers());
+    if (!needsBootstrap) {
+      connections = await connectionRepository.listConnections();
+      users = await authRepository.listUsers();
+      trustedHostKeys = await hostKeyRepository.listTrustedHostKeys();
+    }
+  }
+
+  Future<void> bootstrapAndLogin({
+    required String username,
+    required String name,
+    required String password,
+  }) async {
+    await _run(() async {
+      currentUser = await authRepository.bootstrapAdmin(
+          username: username, name: name, password: password);
+      needsBootstrap = false;
+      connections = await connectionRepository.listConnections();
+      users = await authRepository.listUsers();
+      trustedHostKeys = await hostKeyRepository.listTrustedHostKeys();
+    });
+  }
+
+  Future<void> login(String username, String password) async {
+    await _run(() async {
+      final user = await authRepository.authenticate(username, password);
+      if (user == null) {
+        throw StateError('아이디 또는 비밀번호가 올바르지 않습니다.');
+      }
+      currentUser = user;
+      connections = await connectionRepository.listConnections();
+      users = await authRepository.listUsers();
+      trustedHostKeys = await hostKeyRepository.listTrustedHostKeys();
+    });
+  }
+
+  Future<void> loginWithPassword(String password) async {
+    await _run(() async {
+      final user = await authRepository.authenticateDefault(password);
+      if (user == null) {
+        throw StateError('비밀번호가 올바르지 않습니다.');
+      }
+      currentUser = user;
+      connections = await connectionRepository.listConnections();
+      users = await authRepository.listUsers();
+      trustedHostKeys = await hostKeyRepository.listTrustedHostKeys();
+    });
+  }
+
+  Future<void> loginWithoutPassword() async {
+    await _run(() async {
+      if (needsBootstrap) {
+        currentUser = await authRepository.bootstrapLocalAdmin();
+        needsBootstrap = false;
+      } else {
+        currentUser = await authRepository.defaultUser();
+      }
+      if (currentUser == null) {
+        throw StateError('사용자를 찾을 수 없습니다.');
+      }
+      connections = await connectionRepository.listConnections();
+      users = await authRepository.listUsers();
+      trustedHostKeys = await hostKeyRepository.listTrustedHostKeys();
+    });
+  }
+
+  Future<void> logout() async {
+    await _closeAllSessions();
+    _reconnectSecrets.clear();
+    activeSession = null;
+    activeDirectory = null;
+    currentUser = null;
+    notifyListeners();
+  }
+
+  Future<void> refreshConnections() async {
+    connections = await connectionRepository.listConnections();
+    notifyListeners();
+  }
+
+  Future<void> deleteConnection(SavedConnection connection) async {
+    await _run(() async {
+      await connectionRepository.deleteConnection(connection.id);
+      _reconnectSecrets.remove(connection.fingerprint);
+      final sessionsToClose = liveSessions
+          .where((session) =>
+              session.connection.fingerprint == connection.fingerprint)
+          .toList();
+      for (final session in sessionsToClose) {
+        await session.cleanupTemporaryUploads();
+        _removeSession(session);
+      }
+      connections = await connectionRepository.listConnections();
+    });
+  }
+
+  Future<void> refreshUsers() async {
+    users = await authRepository.listUsers();
+    trustedHostKeys = await hostKeyRepository.listTrustedHostKeys();
+    notifyListeners();
+  }
+
+  Future<void> createUser({
+    required String username,
+    required String name,
+    required String password,
+    UserRole role = UserRole.user,
+  }) async {
+    await _run(() async {
+      await authRepository.createUser(
+          username: username, name: name, password: password, role: role);
+      users = await authRepository.listUsers();
+    });
+  }
+
+  Future<void> deleteUser(SeilUser user) async {
+    await _run(() async {
+      await authRepository.deleteUser(user.id);
+      users = await authRepository.listUsers();
+    });
+  }
+
+  Future<void> changePassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    final user = currentUser;
+    if (user == null) {
+      return;
+    }
+    await _run(() async {
+      await authRepository.changePassword(
+        userId: user.id,
+        currentPassword: currentPassword,
+        newPassword: newPassword,
+      );
+      currentUser = await authRepository.getUserById(user.id);
+      users = await authRepository.listUsers();
+    });
+  }
+
+  Future<void> trustHostKey({
+    required String host,
+    required int port,
+    required String keyType,
+    required String fingerprintSha256,
+  }) async {
+    await _run(() async {
+      await hostKeyRepository.trustHostKey(
+        host: host,
+        port: port,
+        keyType: keyType,
+        fingerprintSha256: fingerprintSha256,
+      );
+      trustedHostKeys = await hostKeyRepository.listTrustedHostKeys();
+    });
+  }
+
+  Future<void> deleteTrustedHostKey(TrustedHostKey hostKey) async {
+    await _run(() async {
+      await hostKeyRepository.deleteTrustedHostKey(hostKey.id);
+      trustedHostKeys = await hostKeyRepository.listTrustedHostKeys();
+    });
+  }
+
+  Future<void> setLoginPasswordEnabled(bool enabled,
+      {String? newPassword}) async {
+    await _run(() async {
+      final user = currentUser;
+      if (enabled) {
+        if (user == null) {
+          throw StateError('로그인된 사용자가 없습니다.');
+        }
+        final password = newPassword ?? '';
+        await authRepository.setPassword(
+            userId: user.id, newPassword: password);
+        currentUser = await authRepository.getUserById(user.id);
+      }
+      await settingsRepository.setLoginPasswordEnabled(enabled);
+      loginPasswordEnabled = enabled;
+    });
+  }
+
+  Future<void> setLowEndModeEnabled(bool enabled) async {
+    if (lowEndModeEnabled == enabled) {
+      return;
+    }
+    final previous = lowEndModeEnabled;
+    lowEndModeEnabled = enabled;
+    notifyListeners();
+    try {
+      await settingsRepository.setLowEndModeEnabled(enabled);
+    } catch (error) {
+      lowEndModeEnabled = previous;
+      _setError(_displayErrorMessage(error), showPopup: false);
+      notifyListeners();
+    }
+  }
+
+  Future<void> setAppLanguageCode(String languageCode) async {
+    final normalized =
+        AppSettingsRepository.supportedLanguageCodes.contains(languageCode)
+            ? languageCode
+            : AppSettingsRepository.systemLanguageCode;
+    if (appLanguageCode == normalized) {
+      return;
+    }
+    final previous = appLanguageCode;
+    appLanguageCode = normalized;
+    notifyListeners();
+    try {
+      await settingsRepository.saveAppLanguageCode(normalized);
+    } catch (error) {
+      appLanguageCode = previous;
+      _setError(_displayErrorMessage(error), showPopup: false);
+      notifyListeners();
+    }
+  }
+
+  String keyboardMacro(int index) {
+    if (index < 0 || index >= keyboardMacros.length) {
+      return '';
+    }
+    return keyboardMacros[index];
+  }
+
+  Future<void> saveKeyboardMacros(List<String> macros) async {
+    await _run(() async {
+      keyboardMacros = List<String>.generate(
+        AppSettingsRepository.keyboardMacroCount,
+        (index) => index < macros.length ? macros[index] : '',
+      );
+      await settingsRepository.saveKeyboardMacros(keyboardMacros);
+    });
+  }
+
+  Future<void> connectNew(SshConnectionInput input,
+      {int initialPaneIndex = 0}) async {
+    final fingerprint = connectionRepository.createConnectionFingerprint(input);
+    final existed = connections.any(
+      (connection) => connection.fingerprint == fingerprint,
+    );
+    await _run(() async {
+      final connection = await connectionRepository.upsertConnection(input);
+      connections = await connectionRepository.listConnections();
+      try {
+        await _connect(
+          connection,
+          transientSecret: input.secret,
+          initialPaneIndex: initialPaneIndex,
+        );
+      } catch (error) {
+        if (!existed) {
+          await connectionRepository.deleteConnection(connection.id);
+          connections = await connectionRepository.listConnections();
+        }
+        throw StateError(_connectionFailureMessage(error));
+      }
+    });
+  }
+
+  Future<void> connectSaved(SavedConnection connection,
+      {String? transientSecret,
+      int initialPaneIndex = 0,
+      bool reuseExisting = true}) async {
+    connectingConnectionId = connection.id;
+    notifyListeners();
+    try {
+      await _run(() async {
+        try {
+          await _connect(connection,
+              transientSecret: transientSecret,
+              initialPaneIndex: initialPaneIndex,
+              reuseExisting: reuseExisting);
+        } catch (error) {
+          throw StateError(_connectionFailureMessage(error));
+        }
+      });
+    } finally {
+      if (connectingConnectionId == connection.id) {
+        connectingConnectionId = null;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> _connect(SavedConnection connection,
+      {String? transientSecret,
+      int initialPaneIndex = 0,
+      bool reuseExisting = true}) async {
+    final existing = _findOpenSessionForConnection(connection);
+    if (existing != null) {
+      if (!reuseExisting) {
+        await _serializeSessionStart(() async {
+          await _startTerminalSessionFrom(
+            existing,
+            path: sessionDirectories[terminalFrameKey(existing)]?.currentPath ??
+                existing.currentPath,
+            initialPaneIndex: initialPaneIndex,
+            selectNewTmux: true,
+          );
+        });
+        return;
+      }
+      activeSession = existing;
+      activeDirectory = sessionDirectories[terminalFrameKey(existing)];
+      sessionPaneIndexes.putIfAbsent(
+          terminalFrameKey(existing), () => initialPaneIndex);
+      return;
+    }
+
+    final secret =
+        await connectionRepository.resolveSecret(connection, transientSecret);
+    if (connection.authMode != AuthMode.agent &&
+        (secret == null || secret.isEmpty)) {
+      throw StateError('저장된 SSH secret이 없어 다시 입력이 필요합니다.');
+    }
+    final session = await sshSessionService.connect(
+        connection: connection, secret: secret ?? '');
+    final directory = await session.listDirectory(session.homePath);
+    if (secret != null && secret.isNotEmpty) {
+      _reconnectSecrets[connection.fingerprint] = secret;
+    }
+    liveSessions.add(session);
+    sessionDirectories[terminalFrameKey(session)] = directory;
+    _cacheDirectory(session, directory);
+    sessionPaneIndexes[terminalFrameKey(session)] = initialPaneIndex;
+    activeSession = session;
+    activeDirectory = directory;
+  }
+
+  void selectSession(LiveSshSession session) {
+    activeSession = session;
+    activeDirectory = sessionDirectories[terminalFrameKey(session)];
+    notifyListeners();
+  }
+
+  String terminalFrameKey(LiveSshSession session) {
+    return '${session.id}:${session.selectedTmuxSessionName ?? 'new'}';
+  }
+
+  TmuxCaptureFrame? cachedTerminalFrame(LiveSshSession? session) {
+    if (session == null) {
+      return null;
+    }
+    return _terminalFrames[terminalFrameKey(session)];
+  }
+
+  void cacheTerminalFrame(LiveSshSession session, TmuxCaptureFrame frame) {
+    _terminalFrames[terminalFrameKey(session)] = frame;
+  }
+
+  int sessionNumber(LiveSshSession session) {
+    final index = liveSessions.indexWhere((item) => item.id == session.id);
+    return index < 0 ? 0 : index + 1;
+  }
+
+  String? sessionCustomName(LiveSshSession session) {
+    final name = _sessionNames[session.id]?.trim();
+    return name == null || name.isEmpty ? null : name;
+  }
+
+  String sessionLabel(LiveSshSession session) {
+    final path = session.currentPath.trim();
+    return path.isEmpty ? session.displayName : path;
+  }
+
+  String nextTmuxSessionName(LiveSshSession session) {
+    return session.nextAvailableTmuxSessionName(
+      reservedNames: _reservedTmuxNamesForClient(session),
+      basePath: _sessionDirectoryPath(session),
+    );
+  }
+
+  void renameSession(LiveSshSession session, String name) {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) {
+      _sessionNames.remove(session.id);
+    } else {
+      _sessionNames[session.id] = trimmed;
+    }
+    notifyListeners();
+  }
+
+  void selectActivePane(int index) {
+    final session = activeSession;
+    if (session == null) {
+      return;
+    }
+    sessionPaneIndexes[terminalFrameKey(session)] = index;
+    notifyListeners();
+  }
+
+  Future<void> refreshActiveTmuxSessions({bool silent = false}) async {
+    final session = activeSession;
+    if (session == null || !session.tmuxAvailable) {
+      return;
+    }
+    if (silent) {
+      try {
+        final previous = List<RemoteTmuxSession>.from(session.tmuxSessions);
+        final sessions = await session.listTmuxSessions();
+        if (_tmuxSessionListsEqual(previous, sessions)) {
+          return;
+        }
+        _syncTmuxSessionsForClient(session, sessions);
+        notifyListeners();
+      } catch (_) {
+        return;
+      }
+      return;
+    }
+    await _run(() async {
+      _syncTmuxSessionsForClient(session, await session.listTmuxSessions());
+    });
+  }
+
+  Future<void> selectTmuxSession(RemoteTmuxSession tmuxSession) async {
+    final session = activeSession;
+    if (session == null) {
+      return;
+    }
+    final previousPaneIndex = activePaneIndex;
+    session.selectTmuxSession(tmuxSession);
+    if (tmuxSession.currentPath?.trim().isNotEmpty == true) {
+      session.currentPath = tmuxSession.currentPath!.trim();
+    }
+    final workspaceKey = terminalFrameKey(session);
+    sessionPaneIndexes.putIfAbsent(workspaceKey, () => previousPaneIndex);
+    activeDirectory = sessionDirectories[workspaceKey];
+    notifyListeners();
+    if (activeDirectory == null) {
+      final path = tmuxSession.currentPath?.trim().isNotEmpty == true
+          ? tmuxSession.currentPath!.trim()
+          : session.currentPath;
+      await loadDirectory(path, addToHistory: false);
+    }
+  }
+
+  Future<void> selectNewTmuxSession({String? basePath}) async {
+    final session = activeSession;
+    if (session == null) {
+      return;
+    }
+    var selectedPath = basePath ?? session.homePath;
+    await _serializeSessionStart(() async {
+      await _run(() async {
+        if (session.tmuxAvailable) {
+          _syncTmuxSessionsForClient(session, await session.listTmuxSessions());
+        }
+        selectedPath = basePath ?? session.homePath;
+        session.selectNewTmuxSession(
+          reservedNames: _reservedTmuxNamesForClient(session),
+          basePath: selectedPath,
+        );
+        final workspaceKey = terminalFrameKey(session);
+        sessionPaneIndexes.putIfAbsent(workspaceKey, () => activePaneIndex);
+        activeDirectory = sessionDirectories[workspaceKey];
+      }, showErrorPopup: false);
+    });
+    if (activeSession?.id == session.id && activeDirectory == null) {
+      await loadDirectory(selectedPath, addToHistory: false);
+    }
+  }
+
+  SessionTag? tmuxSessionTag(LiveSshSession session, String tmuxName) {
+    return _tmuxTags[_tmuxTagKey(session.connection, tmuxName)];
+  }
+
+  void setTmuxSessionTag(
+    LiveSshSession session,
+    String tmuxName, {
+    required String label,
+    required int colorValue,
+  }) {
+    final trimmed = label.trim();
+    final key = _tmuxTagKey(session.connection, tmuxName);
+    if (trimmed.isEmpty) {
+      _tmuxTags.remove(key);
+    } else {
+      _tmuxTags[key] = SessionTag(label: trimmed, colorValue: colorValue);
+    }
+    notifyListeners();
+  }
+
+  void updateSessionCurrentPath(LiveSshSession session, String? path) {
+    final trimmed = path?.trim();
+    if (trimmed == null || trimmed.isEmpty || session.currentPath == trimmed) {
+      return;
+    }
+    session.currentPath = trimmed;
+    final selectedName = session.selectedTmuxSessionName;
+    if (selectedName != null) {
+      session.tmuxSessions = [
+        for (final tmuxSession in session.tmuxSessions)
+          tmuxSession.name == selectedName
+              ? RemoteTmuxSession(
+                  name: tmuxSession.name,
+                  windows: tmuxSession.windows,
+                  attachedClients: tmuxSession.attachedClients,
+                  createdAt: tmuxSession.createdAt,
+                  lastActivityAt: tmuxSession.lastActivityAt,
+                  currentPath: trimmed,
+                )
+              : tmuxSession,
+      ];
+    }
+    notifyListeners();
+  }
+
+  Future<void> detachActiveSession() async {
+    activeSession = null;
+    activeDirectory = null;
+    notifyListeners();
+  }
+
+  Future<void> closeActiveSession() async {
+    final session = activeSession;
+    if (session == null) {
+      return;
+    }
+    await closeSession(session);
+  }
+
+  Future<void> disconnect() => closeActiveSession();
+
+  Future<void> deleteActiveTmuxSession() async {
+    final session = activeSession;
+    final tmuxName = session?.selectedTmuxSessionName?.trim();
+    if (session == null || !session.tmuxAvailable || tmuxName == null) {
+      return;
+    }
+    if (tmuxName.isEmpty) {
+      return;
+    }
+
+    await deleteTmuxSession(session, tmuxName);
+  }
+
+  Future<void> deleteTmuxSession(
+    LiveSshSession session,
+    String tmuxName,
+  ) async {
+    final trimmed = tmuxName.trim();
+    if (!session.tmuxAvailable || trimmed.isEmpty) {
+      return;
+    }
+
+    await _run(() async {
+      for (final liveSession in liveSessions) {
+        if (liveSession.client == session.client) {
+          await liveSession.cleanupTemporaryUploads(tmuxSessionName: trimmed);
+        }
+      }
+      final sessions = await session.killTmuxSession(trimmed);
+      _tmuxTags.remove(_tmuxTagKey(session.connection, trimmed));
+      for (final liveSession in liveSessions) {
+        if (liveSession.client == session.client &&
+            liveSession.selectedTmuxSessionName == trimmed) {
+          liveSession.resetTmuxSelection(sessions: sessions);
+        } else if (liveSession.client == session.client) {
+          liveSession.tmuxSessions = List<RemoteTmuxSession>.from(sessions);
+        }
+      }
+    });
+  }
+
+  Future<void> closeSession(LiveSshSession session) async {
+    await session.cleanupTemporaryUploads();
+    _removeSession(session);
+    notifyListeners();
+  }
+
+  void _removeSession(LiveSshSession session) {
+    final index = liveSessions.indexWhere((item) => item.id == session.id);
+    if (index < 0) {
+      return;
+    }
+
+    liveSessions.removeAt(index);
+    sessionDirectories
+        .removeWhere((key, _) => key.startsWith('${session.id}:'));
+    sessionPaneIndexes
+        .removeWhere((key, _) => key.startsWith('${session.id}:'));
+    _directoryBackStacks
+        .removeWhere((key, _) => key.startsWith('${session.id}:'));
+    _sessionNames.remove(session.id);
+    _terminalFrames.removeWhere((key, _) => key.startsWith('${session.id}:'));
+    _directoryCache.removeWhere((key, _) => key.startsWith('${session.id}:'));
+    session.close(closeClient: !_hasOtherSessionsOnClient(session));
+    if (!_hasOtherSessionsForConnection(session.connection)) {
+      _reconnectSecrets.remove(session.connection.fingerprint);
+    }
+
+    if (activeSession?.id == session.id) {
+      activeSession = liveSessions.isNotEmpty ? liveSessions.last : null;
+      activeDirectory = activeSession == null
+          ? null
+          : sessionDirectories[terminalFrameKey(activeSession!)];
+    }
+  }
+
+  Future<void> reconnectClosedSessions() async {
+    if (reconnecting || currentUser == null || liveSessions.isEmpty) {
+      return;
+    }
+
+    final closedSessions =
+        liveSessions.where((session) => session.isClosed).toList();
+    if (closedSessions.isEmpty) {
+      return;
+    }
+
+    reconnecting = true;
+    errorMessage = null;
+    final reconnectStartedAt = DateTime.now();
+    notifyListeners();
+
+    final replacements = <String, LiveSshSession>{};
+    final reconnectedByClient = <Object, LiveSshSession>{};
+    final newDirectories = <String, RemoteDirectory>{};
+    final newPaneIndexes = <String, int>{};
+    final newSessionNames = <String, String>{};
+    final newTerminalFrames = <String, TmuxCaptureFrame>{};
+    final newDirectoryBackStacks = <String, List<String>>{};
+    final oldActiveId = activeSession?.id;
+
+    try {
+      for (final oldSession in closedSessions) {
+        final baseSession = reconnectedByClient[oldSession.client];
+        final replacement = baseSession == null
+            ? await _reconnectRootSession(oldSession)
+            : baseSession.createTerminalSession(
+                initialPath: _sessionDirectoryPath(oldSession),
+              );
+
+        reconnectedByClient[oldSession.client] = baseSession ?? replacement;
+        _restoreSessionSelection(oldSession, replacement);
+
+        final directory = await _loadReconnectDirectory(
+          replacement,
+          _sessionDirectoryPath(oldSession),
+        );
+        final oldWorkspaceKey = terminalFrameKey(oldSession);
+        final replacementWorkspaceKey = terminalFrameKey(replacement);
+        replacements[oldSession.id] = replacement;
+        newDirectories[replacementWorkspaceKey] = directory;
+        _cacheDirectory(replacement, directory);
+        newPaneIndexes[replacementWorkspaceKey] =
+            sessionPaneIndexes[oldWorkspaceKey] ?? 0;
+        final oldName = _sessionNames[oldSession.id];
+        if (oldName != null) {
+          newSessionNames[replacement.id] = oldName;
+        }
+        final oldFrame = _terminalFrames[terminalFrameKey(oldSession)];
+        if (oldFrame != null) {
+          newTerminalFrames[terminalFrameKey(replacement)] = oldFrame;
+        }
+        final oldBackStack = _directoryBackStacks[oldWorkspaceKey];
+        if (oldBackStack != null) {
+          newDirectoryBackStacks[replacementWorkspaceKey] =
+              List<String>.from(oldBackStack);
+        }
+      }
+
+      liveSessions = [
+        for (final session in liveSessions) replacements[session.id] ?? session,
+      ];
+      for (final oldSession in closedSessions) {
+        sessionDirectories
+            .removeWhere((key, _) => key.startsWith('${oldSession.id}:'));
+        sessionPaneIndexes
+            .removeWhere((key, _) => key.startsWith('${oldSession.id}:'));
+        _directoryBackStacks
+            .removeWhere((key, _) => key.startsWith('${oldSession.id}:'));
+        _sessionNames.remove(oldSession.id);
+        _terminalFrames.removeWhere(
+          (key, _) => key.startsWith('${oldSession.id}:'),
+        );
+        _directoryCache.removeWhere(
+          (key, _) => key.startsWith('${oldSession.id}:'),
+        );
+      }
+      sessionDirectories.addAll(newDirectories);
+      sessionPaneIndexes.addAll(newPaneIndexes);
+      _directoryBackStacks.addAll(newDirectoryBackStacks);
+      _sessionNames.addAll(newSessionNames);
+      _terminalFrames.addAll(newTerminalFrames);
+
+      if (oldActiveId != null && replacements.containsKey(oldActiveId)) {
+        activeSession = replacements[oldActiveId];
+        activeDirectory = sessionDirectories[terminalFrameKey(activeSession!)];
+      }
+    } catch (error) {
+      if (DateTime.now().difference(reconnectStartedAt) >=
+          _reconnectErrorDelay) {
+        _setError('SSH 재연결 실패: $error', showPopup: false);
+      }
+    } finally {
+      reconnecting = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> createTerminalSessionFromActive({
+    String? path,
+    int initialPaneIndex = 0,
+    bool selectNewTmux = false,
+  }) async {
+    final source = activeSession;
+    if (source == null) {
+      return;
+    }
+
+    await _serializeSessionStart(() async {
+      await _run(() async {
+        await _startTerminalSessionFrom(
+          source,
+          path: path ?? activeDirectory?.currentPath ?? source.currentPath,
+          initialPaneIndex: initialPaneIndex,
+          selectNewTmux: selectNewTmux,
+        );
+      });
+    });
+  }
+
+  Future<void> loadDirectory(
+    String path, {
+    bool force = false,
+    bool addToHistory = true,
+  }) async {
+    final session = activeSession;
+    if (session == null) {
+      return;
+    }
+    final workspaceKey = terminalFrameKey(session);
+    final fromPath = sessionDirectories[workspaceKey]?.currentPath;
+    final cached = force ? null : _cachedDirectory(session, path);
+    if (cached != null) {
+      _recordDirectoryHistory(session, fromPath, cached.currentPath,
+          addToHistory: addToHistory);
+      activeDirectory = cached;
+      sessionDirectories[workspaceKey] = cached;
+      notifyListeners();
+      return;
+    }
+    await _run(() async {
+      final directory = await session.listDirectory(path);
+      _recordDirectoryHistory(session, fromPath, directory.currentPath,
+          addToHistory: addToHistory);
+      sessionDirectories[workspaceKey] = directory;
+      _cacheDirectory(session, directory);
+      if (activeSession?.id == session.id &&
+          terminalFrameKey(activeSession!) == workspaceKey) {
+        activeDirectory = directory;
+      }
+    });
+  }
+
+  Future<void> createFolder(String name) async {
+    final session = activeSession;
+    final directory = activeDirectory;
+    if (session == null || directory == null) {
+      return;
+    }
+    final workspaceKey = terminalFrameKey(session);
+    await _run(() async {
+      await session.createDirectory(directory.currentPath, name);
+      _invalidateDirectory(session, directory.currentPath);
+      final refreshed = await session.listDirectory(directory.currentPath);
+      sessionDirectories[workspaceKey] = refreshed;
+      _cacheDirectory(session, refreshed);
+      if (activeSession?.id == session.id &&
+          terminalFrameKey(activeSession!) == workspaceKey) {
+        activeDirectory = refreshed;
+      }
+    });
+  }
+
+  Future<void> renameEntry(RemoteFileEntry entry, String newName) async {
+    final session = activeSession;
+    final directory = activeDirectory;
+    if (session == null || directory == null) {
+      return;
+    }
+    final workspaceKey = terminalFrameKey(session);
+    await _run(() async {
+      await session.rename(entry.path, newName);
+      _invalidateDirectory(session, directory.currentPath);
+      final refreshed = await session.listDirectory(directory.currentPath);
+      sessionDirectories[workspaceKey] = refreshed;
+      _cacheDirectory(session, refreshed);
+      if (activeSession?.id == session.id &&
+          terminalFrameKey(activeSession!) == workspaceKey) {
+        activeDirectory = refreshed;
+      }
+    });
+  }
+
+  Future<void> uploadFileStream({
+    required String directoryPath,
+    required String name,
+    required Stream<List<int>> stream,
+    bool temporary = false,
+  }) async {
+    final session = activeSession;
+    if (session == null) {
+      return;
+    }
+    final workspaceKey = terminalFrameKey(session);
+    await _run(() async {
+      await session.uploadStream(directoryPath, name, stream);
+      if (temporary) {
+        session.trackTemporaryUpload(_joinRemotePath(directoryPath, name));
+      }
+      _invalidateDirectory(session, directoryPath);
+      final refreshed = await session.listDirectory(directoryPath);
+      sessionDirectories[workspaceKey] = refreshed;
+      _cacheDirectory(session, refreshed);
+      if (activeSession?.id == session.id &&
+          terminalFrameKey(activeSession!) == workspaceKey) {
+        activeDirectory = refreshed;
+      }
+    });
+  }
+
+  Future<void> refreshActiveDirectory() async {
+    final directory = activeDirectory;
+    if (directory == null) {
+      return;
+    }
+    await loadDirectory(directory.currentPath, force: true);
+  }
+
+  bool get canGoBackDirectory {
+    final session = activeSession;
+    return session != null &&
+        (_directoryBackStacks[terminalFrameKey(session)]?.isNotEmpty ?? false);
+  }
+
+  Future<void> goBackDirectory() async {
+    final session = activeSession;
+    if (session == null) {
+      return;
+    }
+    final stack = _directoryBackStacks[terminalFrameKey(session)];
+    if (stack == null || stack.isEmpty) {
+      return;
+    }
+    final previousPath = stack.removeLast();
+    await loadDirectory(previousPath, addToHistory: false);
+  }
+
+  Future<void> pingLiveSessions() async {
+    final uniqueSessions = <Object, LiveSshSession>{};
+    for (final session in liveSessions) {
+      uniqueSessions.putIfAbsent(session.client, () => session);
+    }
+    await Future.wait(
+      uniqueSessions.values
+          .where((session) => !session.isClosed)
+          .map((session) => session.ping().catchError((Object _) {})),
+    );
+  }
+
+  String _directoryCacheKey(LiveSshSession session, String path) {
+    return '${terminalFrameKey(session)}:$path';
+  }
+
+  RemoteDirectory? _cachedDirectory(LiveSshSession session, String path) {
+    final cached = _directoryCache[_directoryCacheKey(session, path)];
+    if (cached == null) {
+      return null;
+    }
+    final age = DateTime.now().difference(cached.fetchedAt);
+    return age <= _directoryCacheTtl ? cached.directory : null;
+  }
+
+  void _cacheDirectory(LiveSshSession session, RemoteDirectory directory) {
+    _directoryCache[_directoryCacheKey(session, directory.currentPath)] =
+        _CachedDirectory(directory, DateTime.now());
+  }
+
+  void _recordDirectoryHistory(
+    LiveSshSession session,
+    String? fromPath,
+    String toPath, {
+    required bool addToHistory,
+  }) {
+    if (!addToHistory || fromPath == null || fromPath == toPath) {
+      return;
+    }
+    final stack =
+        _directoryBackStacks.putIfAbsent(terminalFrameKey(session), () => []);
+    if (stack.isEmpty || stack.last != fromPath) {
+      stack.add(fromPath);
+    }
+    if (stack.length > 80) {
+      stack.removeRange(0, stack.length - 80);
+    }
+  }
+
+  void _invalidateDirectory(LiveSshSession session, String path) {
+    _directoryCache.remove(_directoryCacheKey(session, path));
+  }
+
+  bool _hasOtherSessionsOnClient(LiveSshSession session) {
+    return liveSessions
+        .any((item) => item.id != session.id && item.client == session.client);
+  }
+
+  bool _hasOtherSessionsForConnection(SavedConnection connection) {
+    return liveSessions.any(
+      (session) => session.connection.fingerprint == connection.fingerprint,
+    );
+  }
+
+  Set<String> _reservedTmuxNamesForClient(LiveSshSession session) {
+    return {
+      for (final liveSession in liveSessions)
+        if (liveSession.client == session.client) ...[
+          if (liveSession.selectedTmuxSessionName?.trim().isNotEmpty == true)
+            liveSession.selectedTmuxSessionName!.trim(),
+          ...liveSession.tmuxSessions.map((tmuxSession) => tmuxSession.name),
+        ],
+    };
+  }
+
+  Future<void> _startTerminalSessionFrom(
+    LiveSshSession source, {
+    required String path,
+    required int initialPaneIndex,
+    required bool selectNewTmux,
+  }) async {
+    final targetPath = path.trim().isEmpty ? source.currentPath : path.trim();
+    if (source.tmuxAvailable) {
+      _syncTmuxSessionsForClient(source, await source.listTmuxSessions());
+    }
+    final reservedNames = _reservedTmuxNamesForClient(source);
+    final session = source.createTerminalSession(initialPath: targetPath);
+    if (selectNewTmux && session.tmuxAvailable) {
+      session.selectNewTmuxSession(
+        reservedNames: reservedNames,
+        basePath: targetPath,
+      );
+    }
+    final sourceDirectory = sessionDirectories[terminalFrameKey(source)];
+    final directory = sourceDirectory?.currentPath == targetPath
+        ? sourceDirectory!
+        : await session.listDirectory(targetPath);
+    liveSessions.add(session);
+    sessionDirectories[terminalFrameKey(session)] = directory;
+    _cacheDirectory(session, directory);
+    sessionPaneIndexes[terminalFrameKey(session)] = initialPaneIndex;
+    activeSession = session;
+    activeDirectory = directory;
+  }
+
+  void _syncTmuxSessionsForClient(
+    LiveSshSession source,
+    List<RemoteTmuxSession> sessions,
+  ) {
+    for (final liveSession in liveSessions) {
+      if (liveSession.client == source.client) {
+        liveSession.tmuxSessions = List<RemoteTmuxSession>.from(sessions);
+      }
+    }
+    source.tmuxSessions = List<RemoteTmuxSession>.from(sessions);
+  }
+
+  bool _tmuxSessionListsEqual(
+    List<RemoteTmuxSession> left,
+    List<RemoteTmuxSession> right,
+  ) {
+    if (left.length != right.length) {
+      return false;
+    }
+    for (var index = 0; index < left.length; index += 1) {
+      final a = left[index];
+      final b = right[index];
+      if (a.name != b.name ||
+          a.windows != b.windows ||
+          a.attachedClients != b.attachedClients ||
+          a.createdAt != b.createdAt ||
+          a.lastActivityAt != b.lastActivityAt ||
+          a.currentPath != b.currentPath) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  Future<T> _serializeSessionStart<T>(Future<T> Function() action) {
+    final previous = _sessionStartTail.catchError((Object _) {});
+    final completer = Completer<void>();
+    _sessionStartTail = completer.future;
+    return previous.then((_) async {
+      try {
+        return await action();
+      } finally {
+        if (!completer.isCompleted) {
+          completer.complete();
+        }
+      }
+    });
+  }
+
+  Future<LiveSshSession> _reconnectRootSession(
+    LiveSshSession oldSession,
+  ) async {
+    final secret = await connectionRepository.resolveSecret(
+      oldSession.connection,
+      _reconnectSecrets[oldSession.connection.fingerprint],
+    );
+    if (oldSession.connection.authMode != AuthMode.agent &&
+        (secret == null || secret.isEmpty)) {
+      throw StateError('재연결에 필요한 SSH secret이 없어 다시 연결해야 합니다.');
+    }
+
+    final session = await sshSessionService.connect(
+      connection: oldSession.connection,
+      secret: secret ?? '',
+    );
+    if (secret != null && secret.isNotEmpty) {
+      _reconnectSecrets[oldSession.connection.fingerprint] = secret;
+    }
+    return session;
+  }
+
+  Future<RemoteDirectory> _loadReconnectDirectory(
+    LiveSshSession session,
+    String path,
+  ) async {
+    try {
+      return await session.listDirectory(path);
+    } catch (_) {
+      return session.listDirectory(session.homePath);
+    }
+  }
+
+  String _sessionDirectoryPath(LiveSshSession session) {
+    return sessionDirectories[terminalFrameKey(session)]?.currentPath ??
+        session.currentPath;
+  }
+
+  void _restoreSessionSelection(
+    LiveSshSession oldSession,
+    LiveSshSession replacement,
+  ) {
+    replacement.selectedTmuxSessionName = oldSession.selectedTmuxSessionName;
+    replacement.activeTmuxPaneId = null;
+    replacement.tmuxSelectionReady = oldSession.tmuxSelectionReady;
+    replacement.adoptTemporaryUploadsFrom(oldSession);
+  }
+
+  LiveSshSession? _findOpenSessionForConnection(SavedConnection connection) {
+    for (final session in liveSessions) {
+      if (!session.isClosed &&
+          session.connection.fingerprint == connection.fingerprint) {
+        return session;
+      }
+    }
+    return null;
+  }
+
+  Future<void> _closeAllSessions() async {
+    final sessions = List<LiveSshSession>.from(liveSessions);
+    liveSessions.clear();
+    sessionDirectories.clear();
+    sessionPaneIndexes.clear();
+    _directoryBackStacks.clear();
+    _sessionNames.clear();
+    _terminalFrames.clear();
+    _directoryCache.clear();
+    _reconnectSecrets.clear();
+    final closedClients = <Object>[];
+    for (final session in sessions) {
+      await session.cleanupTemporaryUploads();
+      final closeClient = !closedClients.contains(session.client);
+      session.close(closeClient: closeClient);
+      if (closeClient) {
+        closedClients.add(session.client);
+      }
+    }
+  }
+
+  Future<T?> _run<T>(
+    Future<T> Function() action, {
+    bool showErrorPopup = true,
+  }) async {
+    final wasIdle = _busyDepth == 0;
+    _busyDepth += 1;
+    if (wasIdle) {
+      busy = true;
+    }
+    errorMessage = null;
+    errorShowsPopup = true;
+    if (wasIdle) {
+      notifyListeners();
+    }
+    try {
+      return await action();
+    } catch (error) {
+      _setError(_displayErrorMessage(error), showPopup: showErrorPopup);
+      return null;
+    } finally {
+      _busyDepth -= 1;
+      if (_busyDepth < 0) {
+        _busyDepth = 0;
+      }
+      if (_busyDepth == 0) {
+        busy = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  void _setError(String message, {bool showPopup = true}) {
+    errorMessage = message;
+    errorShowsPopup = showPopup;
+    errorSerial += 1;
+  }
+
+  String _tmuxTagKey(SavedConnection connection, String tmuxName) {
+    return '${connection.fingerprint}:$tmuxName';
+  }
+}
+
+String _joinRemotePath(String directoryPath, String name) {
+  final base = directoryPath.trim().isEmpty ? '/' : directoryPath.trim();
+  return base == '/' ? '/$name' : '$base/$name';
+}
+
+String _connectionFailureMessage(Object error) {
+  final message = _displayErrorMessage(error);
+  final lower = message.toLowerCase();
+  final type = error.runtimeType.toString().toLowerCase();
+  if (error is TimeoutException ||
+      lower.contains('timed out') ||
+      lower.contains('timeout')) {
+    return '연결 실패: 서버 응답 없음 (10초 초과)';
+  }
+  if (type.contains('sshauthfail') ||
+      lower.contains('auth fail') ||
+      lower.contains('authentication failed') ||
+      lower.contains('permission denied')) {
+    return '연결 실패: 인증 실패 (비밀번호 또는 개인 키를 확인해 주세요)';
+  }
+  if (lower.contains('connection refused')) {
+    return '연결 실패: 서버가 연결을 거부했습니다 (호스트/포트 또는 SSH 서비스 상태 확인)';
+  }
+  if (lower.contains('no route to host') ||
+      lower.contains('network is unreachable') ||
+      lower.contains('failed host lookup')) {
+    return '연결 실패: 서버에 도달할 수 없습니다 (네트워크 또는 호스트 주소 확인)';
+  }
+  if (lower.contains('connection reset') || lower.contains('broken pipe')) {
+    return '연결 실패: 서버가 연결을 종료했습니다 ($message)';
+  }
+  return '연결 실패: $message';
+}
+
+String _displayErrorMessage(Object error) {
+  final message = error.toString();
+  const prefixes = [
+    'Bad state: ',
+    'Invalid argument(s): ',
+    'TimeoutException: ',
+    'SocketException: ',
+  ];
+  for (final prefix in prefixes) {
+    if (message.startsWith(prefix)) {
+      return message.substring(prefix.length);
+    }
+  }
+  return message;
+}
+
+class _CachedDirectory {
+  const _CachedDirectory(this.directory, this.fetchedAt);
+
+  final RemoteDirectory directory;
+  final DateTime fetchedAt;
+}

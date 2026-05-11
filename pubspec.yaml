@@ -1,0 +1,59 @@
+name: seil_mobile
+description: Mobile SSH terminal and SFTP workspace for Seil.
+publish_to: "none"
+version: 0.1.0+1
+homepage: https://www.zarathu.com/
+repository: https://github.com/zarathucorp/seil-flutter
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  crypto: ^3.0.6
+  cryptography: ^2.7.0
+  dartssh2: ^2.12.0
+  file_picker: ^8.1.7
+  flutter_markdown: ^0.7.4
+  flutter_secure_storage: ^9.2.4
+  flutter_svg: ^2.0.17
+  intl: ^0.20.1
+  path: ^1.9.0
+  path_provider: ^2.1.5
+  share_plus: ^10.1.4
+  sqflite: ^2.4.1
+  uuid: ^4.5.1
+  shadcn_ui: ^0.54.0
+  lucide_icons_flutter: ^3.1.13
+  flutter_animate: ^4.5.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/app-logo.png
+    - assets/vscode-icons/icons/
+  fonts:
+    - family: Pretendard
+      fonts:
+        - asset: assets/fonts/Pretendard-Regular.otf
+          weight: 400
+        - asset: assets/fonts/Pretendard-Medium.otf
+          weight: 500
+        - asset: assets/fonts/Pretendard-SemiBold.otf
+          weight: 600
+        - asset: assets/fonts/Pretendard-Bold.otf
+          weight: 700
+    - family: FiraCodeNerdFontMono
+      fonts:
+        - asset: assets/fonts/FiraCodeNerdFontMono-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/FiraCodeNerdFontMono-Medium.ttf
+          weight: 500
