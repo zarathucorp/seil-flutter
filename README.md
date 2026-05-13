@@ -132,6 +132,36 @@ The generated APK is usually located at:
 build/app/outputs/flutter-apk/app-release.apk
 ```
 
+### Build a Google Play App Bundle
+
+Closed testing on Google Play should use a release-signed Android App Bundle. Release builds intentionally fail when `android/key.properties` is missing so a debug-signed artifact is not uploaded by mistake.
+
+If this is the first Google Play upload for this package, generate a local upload keystore:
+
+```bash
+keytool -genkeypair -v -keystore android/upload-keystore.jks -storetype JKS -keyalg RSA -keysize 2048 -validity 10000 -alias upload
+```
+
+Create the local signing config and fill in the passwords you used:
+
+```bash
+cp android/key.properties.example android/key.properties
+```
+
+Build and verify the Google Play bundle:
+
+```bash
+./scripts/build-google-play-aab.sh
+```
+
+The generated bundle is copied to:
+
+```text
+release/google/seil-v<version>-google-play-release.aab
+```
+
+For CLI upload automation, Google Play uses a Play Developer Publishing API service account JSON key rather than an interactive Google account login. Keep the JSON key and local keystore out of git.
+
 ### Install and Run an APK
 
 Install through Flutter:

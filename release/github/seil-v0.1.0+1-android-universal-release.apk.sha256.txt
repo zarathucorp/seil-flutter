@@ -1,1 +1,0 @@
-2e4d421cd582f9925c2624794bd071eca70d43f93d18a8c8916a635aeccf5279  release/github/seil-v0.1.0+1-android-universal-release.apk

@@ -4,6 +4,12 @@
 *.pyc
 *.swp
 .DS_Store
+._*
+.AppleDouble
+.LSOverride
+Icon?
+.Spotlight-V100
+.Trashes
 .atom/
 .build/
 .buildlog/
@@ -50,14 +56,28 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
+# Release artifacts are uploaded to distribution channels, not committed.
+/release/google/
+/release/github/
+
 # Release signing, credentials, and environment files
+# Android release signing files must stay local.
 key.properties
+**/key.properties
+upload-keystore.*
+**/upload-keystore.*
 *.jks
+**/*.jks
 *.keystore
+**/*.keystore
 *.p12
+**/*.p12
 *.pem
+**/*.pem
 *.key
+**/*.key
 *.p8
+**/*.p8
 .env
 .env.*
 google-services.json
