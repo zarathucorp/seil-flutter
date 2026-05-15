@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 
 import '../core/localization/seil_error_codes.dart';
 import '../core/localization/seil_localizations.dart';
 import '../core/platform/session_retention_service.dart';
+import '../core/platform/terminal_notification_service.dart';
 import '../core/settings/app_settings_repository.dart';
 import '../features/auth/auth_repository.dart';
 import '../features/connections/connection_repository.dart';
@@ -21,6 +23,7 @@ class AppState extends ChangeNotifier {
     required this.settingsRepository,
     required this.sshSessionService,
     this.sessionRetentionService = const SessionRetentionService(),
+    this.terminalNotificationService = const TerminalNotificationService(),
     ReconnectPolicy? reconnectPolicy,
   }) : reconnectPolicy = reconnectPolicy ?? ReconnectPolicy();
 
@@ -30,6 +33,7 @@ class AppState extends ChangeNotifier {
   final AppSettingsRepository settingsRepository;
   final SshSessionService sshSessionService;
   final SessionRetentionService sessionRetentionService;
+  final TerminalNotificationService terminalNotificationService;
   final ReconnectPolicy reconnectPolicy;
 
   SeilUser? currentUser;
@@ -51,6 +55,8 @@ class AppState extends ChangeNotifier {
   bool reconnecting = false;
   bool loginPasswordEnabled = false;
   bool lowEndModeEnabled = false;
+  bool terminalAttentionNotificationsEnabled = false;
+  bool terminalAttentionNotificationTailEnabled = true;
   String appLanguageCode = AppSettingsRepository.systemLanguageCode;
   List<String> keyboardMacros = List<String>.filled(
     AppSettingsRepository.keyboardMacroCount,
@@ -67,6 +73,7 @@ class AppState extends ChangeNotifier {
   Timer? _backgroundKeepAliveTimer;
   Timer? _backgroundRetentionTimer;
   Timer? _reconnectRetryTimer;
+  bool isInForeground = true;
 
   static const _directoryCacheTtl = Duration(seconds: 20);
   static const _reconnectErrorDelay = Duration(seconds: 5);
@@ -86,6 +93,10 @@ class AppState extends ChangeNotifier {
   Future<void> initialize() async {
     loginPasswordEnabled = await settingsRepository.isLoginPasswordEnabled();
     lowEndModeEnabled = await settingsRepository.isLowEndModeEnabled();
+    terminalAttentionNotificationsEnabled =
+        await settingsRepository.areTerminalAttentionNotificationsEnabled();
+    terminalAttentionNotificationTailEnabled =
+        await settingsRepository.isTerminalAttentionNotificationTailEnabled();
     appLanguageCode = await settingsRepository.loadAppLanguageCode();
     keyboardMacros = await settingsRepository.loadKeyboardMacros();
     needsBootstrap = !(await authRepository.hasUsers());
@@ -96,11 +107,13 @@ class AppState extends ChangeNotifier {
   }
 
   void enterBackground() {
+    isInForeground = false;
     _backgroundedAt ??= DateTime.now();
     _startBackgroundRetention();
   }
 
   void resumeFromBackground() {
+    isInForeground = true;
     _stopBackgroundRetention();
     final now = DateTime.now();
     final backgroundedAt = _backgroundedAt;
@@ -145,14 +158,14 @@ class AppState extends ChangeNotifier {
     _backgroundKeepAliveTimer?.cancel();
     _backgroundKeepAliveTimer = Timer.periodic(
       _backgroundKeepAliveInterval,
-      (_) => unawaited(pingLiveSessions()),
+      (_) => unawaited(_backgroundSessionTick()),
     );
     _backgroundRetentionTimer?.cancel();
     _backgroundRetentionTimer = Timer(
       backgroundRetentionDuration,
       _stopBackgroundRetention,
     );
-    unawaited(pingLiveSessions());
+    unawaited(_backgroundSessionTick());
   }
 
   void _stopBackgroundRetention() {
@@ -161,6 +174,13 @@ class AppState extends ChangeNotifier {
     _backgroundRetentionTimer?.cancel();
     _backgroundRetentionTimer = null;
     unawaited(sessionRetentionService.stop());
+  }
+
+  Future<void> _backgroundSessionTick() async {
+    await pingLiveSessions();
+    if (terminalAttentionNotificationsEnabled) {
+      await refreshActiveTmuxSessions(silent: true);
+    }
   }
 
   @override
@@ -299,6 +319,49 @@ class AppState extends ChangeNotifier {
       await settingsRepository.setLowEndModeEnabled(enabled);
     } catch (error) {
       lowEndModeEnabled = previous;
+      _setError(seilLocalizedErrorMessage(appLanguageCode, error),
+          showPopup: false);
+      notifyListeners();
+    }
+  }
+
+  Future<void> setTerminalAttentionNotificationsEnabled(bool enabled) async {
+    if (terminalAttentionNotificationsEnabled == enabled) {
+      return;
+    }
+    var nextEnabled = enabled;
+    if (enabled) {
+      nextEnabled = await terminalNotificationService.requestPermission();
+    }
+    final previous = terminalAttentionNotificationsEnabled;
+    terminalAttentionNotificationsEnabled = nextEnabled;
+    notifyListeners();
+    try {
+      await settingsRepository
+          .setTerminalAttentionNotificationsEnabled(nextEnabled);
+    } catch (error) {
+      terminalAttentionNotificationsEnabled = previous;
+      _setError(seilLocalizedErrorMessage(appLanguageCode, error),
+          showPopup: false);
+      notifyListeners();
+    }
+  }
+
+  Future<void> setTerminalAttentionNotificationTailEnabled(
+    bool enabled,
+  ) async {
+    if (terminalAttentionNotificationTailEnabled == enabled) {
+      return;
+    }
+    final previous = terminalAttentionNotificationTailEnabled;
+    terminalAttentionNotificationTailEnabled = enabled;
+    notifyListeners();
+    try {
+      await settingsRepository.setTerminalAttentionNotificationTailEnabled(
+        enabled,
+      );
+    } catch (error) {
+      terminalAttentionNotificationTailEnabled = previous;
       _setError(seilLocalizedErrorMessage(appLanguageCode, error),
           showPopup: false);
       notifyListeners();
@@ -511,6 +574,7 @@ class AppState extends ChangeNotifier {
       try {
         final previous = List<RemoteTmuxSession>.from(session.tmuxSessions);
         final sessions = _resolveTmuxAttentionTransitions(
+          source: session,
           previous: previous,
           current: await session.listTmuxSessions(),
         );
@@ -519,6 +583,11 @@ class AppState extends ChangeNotifier {
           return;
         }
         _syncTmuxSessionsForClient(session, sessions);
+        unawaited(_notifyTerminalAttentionTransitions(
+          source: session,
+          previous: previous,
+          current: sessions,
+        ));
         notifyListeners();
       } catch (_) {
         return;
@@ -528,10 +597,16 @@ class AppState extends ChangeNotifier {
     await _run(() async {
       final previous = List<RemoteTmuxSession>.from(session.tmuxSessions);
       final sessions = _resolveTmuxAttentionTransitions(
+        source: session,
         previous: previous,
         current: await session.listTmuxSessions(),
       );
       _syncTmuxSessionsForClient(session, sessions);
+      unawaited(_notifyTerminalAttentionTransitions(
+        source: session,
+        previous: previous,
+        current: sessions,
+      ));
     });
   }
 
@@ -1244,6 +1319,7 @@ class AppState extends ChangeNotifier {
   }
 
   List<RemoteTmuxSession> _resolveTmuxAttentionTransitions({
+    required LiveSshSession source,
     required List<RemoteTmuxSession> previous,
     required List<RemoteTmuxSession> current,
   }) {
@@ -1254,13 +1330,98 @@ class AppState extends ChangeNotifier {
       for (final session in current)
         _copyTmuxSessionWithAttention(
           session,
-          terminalAttentionFromTransition(
-            previous: previousByName[session.name]?.attentionState ??
-                TerminalAttentionState.none,
-            current: session.attentionState,
+          _visibleTerminalAttentionState(
+            source: source,
+            tmuxSession: session,
+            state: terminalAttentionFromTransition(
+              previous: previousByName[session.name]?.attentionState ??
+                  TerminalAttentionState.none,
+              current: session.attentionState,
+            ),
           ),
         ),
     ];
+  }
+
+  TerminalAttentionState _visibleTerminalAttentionState({
+    required LiveSshSession source,
+    required RemoteTmuxSession tmuxSession,
+    required TerminalAttentionState state,
+  }) {
+    if (state == TerminalAttentionState.completed &&
+        isInForeground &&
+        source.selectedTmuxSessionName == tmuxSession.name) {
+      return TerminalAttentionState.none;
+    }
+    return state;
+  }
+
+  Future<void> _notifyTerminalAttentionTransitions({
+    required LiveSshSession source,
+    required List<RemoteTmuxSession> previous,
+    required List<RemoteTmuxSession> current,
+  }) async {
+    if (!terminalAttentionNotificationsEnabled || isInForeground) {
+      return;
+    }
+    final previousByName = {
+      for (final session in previous) session.name: session,
+    };
+    for (var index = 0; index < current.length; index += 1) {
+      final session = current[index];
+      final previousState = previousByName[session.name]?.attentionState ??
+          TerminalAttentionState.none;
+      final nextState = session.attentionState;
+      if (previousState == nextState ||
+          (nextState != TerminalAttentionState.completed &&
+              nextState != TerminalAttentionState.actionRequired)) {
+        continue;
+      }
+      final tabNumber = index + 1;
+      final message = _terminalAttentionNotificationTitle(
+        tabNumber: tabNumber,
+        state: nextState,
+      );
+      final tail = terminalAttentionNotificationTailEnabled
+          ? await source.captureTmuxSessionTail(session.name, lines: 5)
+          : '';
+      final body = tail.trim().isEmpty ? message : tail.trim();
+      await terminalNotificationService.show(
+        notificationId: _terminalAttentionNotificationId(
+          source.connection.fingerprint,
+          session.name,
+        ),
+        title: message,
+        body: body,
+      );
+    }
+  }
+
+  String _terminalAttentionNotificationTitle({
+    required int tabNumber,
+    required TerminalAttentionState state,
+  }) {
+    final languageCode =
+        appLanguageCode == AppSettingsRepository.systemLanguageCode
+            ? 'en'
+            : appLanguageCode;
+    final l10n = SeilLocalizations(Locale(languageCode));
+    return switch (state) {
+      TerminalAttentionState.actionRequired =>
+        l10n.terminalActionRequiredNotification(tabNumber),
+      TerminalAttentionState.completed =>
+        l10n.terminalWorkCompleteNotification(tabNumber),
+      TerminalAttentionState.running ||
+      TerminalAttentionState.none =>
+        l10n.terminalStateChangedNotification(tabNumber),
+    };
+  }
+
+  int _terminalAttentionNotificationId(
+    String connectionFingerprint,
+    String tmuxSessionName,
+  ) {
+    return Object.hash(connectionFingerprint, tmuxSessionName) & 0x7fffffff;
   }
 
   RemoteTmuxSession _copyTmuxSessionWithAttention(

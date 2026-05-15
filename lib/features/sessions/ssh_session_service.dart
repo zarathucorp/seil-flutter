@@ -302,6 +302,33 @@ class LiveSshSession {
     return _parseCaptureFrame(output);
   }
 
+  Future<String> captureTmuxSessionTail(
+    String tmuxSessionName, {
+    int lines = 5,
+  }) async {
+    if (!tmuxAvailable) {
+      return '';
+    }
+    final trimmedName = tmuxSessionName.trim();
+    if (trimmedName.isEmpty) {
+      return '';
+    }
+    final target = _quoteShellToken('$trimmedName:');
+    final lineCount = lines.abs().clamp(1, 20).toInt();
+    final output = await runCommand(
+      'tmux capture-pane -t $target -p -S -$lineCount 2>/dev/null || true',
+    );
+    final visibleLines = const LineSplitter()
+        .convert(output)
+        .map((line) => line.trimRight())
+        .where((line) => line.trim().isNotEmpty)
+        .toList();
+    if (visibleLines.length <= lineCount) {
+      return visibleLines.join('\n');
+    }
+    return visibleLines.sublist(visibleLines.length - lineCount).join('\n');
+  }
+
   Future<void> refreshActiveTmuxPane() async {
     if (!tmuxAvailable) {
       activeTmuxPaneId = null;
