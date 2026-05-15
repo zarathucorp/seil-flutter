@@ -13,11 +13,14 @@ const tracks = readListEnv('GOOGLE_PLAY_TRACKS', ['production', 'alpha']);
 const statePath = readEnv('PLAY_RELEASE_STATE_PATH', '.github/state/google-play-release-state.json');
 const notifyOnFirstRun = readBoolEnv('NOTIFY_ON_FIRST_RUN', false);
 
-main().catch((error) => {
+main().catch(async (error) => {
   console.error(`::error::${error.message}`);
   if (error.cause) {
     console.error(error.cause);
   }
+  await writeFailureStepSummary(error).catch((summaryError) => {
+    console.error(`::warning::Could not write failure summary: ${summaryError.message}`);
+  });
   process.exitCode = 1;
 });
 
@@ -209,7 +212,21 @@ function normalizeRelease(release) {
     status: release.status ?? null,
     userFraction: release.userFraction ?? null,
     versionCodes: normalizeVersionCodes(release.versionCodes),
+    releaseNotes: normalizeReleaseNotes(release.releaseNotes),
   };
+}
+
+function normalizeReleaseNotes(releaseNotes) {
+  if (!Array.isArray(releaseNotes)) {
+    return [];
+  }
+  return releaseNotes
+    .map((releaseNote) => ({
+      language: releaseNote.language ?? 'unknown',
+      text: releaseNote.text ?? '',
+    }))
+    .filter((releaseNote) => releaseNote.text.trim() !== '')
+    .sort((a, b) => a.language.localeCompare(b.language));
 }
 
 function compareReleases(left, right) {
@@ -317,7 +334,7 @@ async function postSlackNotification(changes, currentState) {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*Package*: \`${currentState.packageName}\`\n${changeLines}`,
+          text: `*Package*: \`${currentState.packageName}\`\n*Play Store*: ${getPlayStoreUrl(currentState.packageName)}\n${changeLines}`,
         },
       },
       {
@@ -376,10 +393,12 @@ async function writeStepSummary(previousState, currentState, changes) {
   if (!summaryPath) {
     return;
   }
+  const releaseNoteLines = currentState.tracks.flatMap(formatTrackReleaseNotes);
   const lines = [
-    '## Google Play release watcher',
+    '## Google Play Release Watcher',
     '',
     `Package: \`${currentState.packageName}\``,
+    `Play Store: [${currentState.packageName}](${getPlayStoreUrl(currentState.packageName)})`,
     `Observed at: \`${currentState.observedAt}\``,
     `Previous snapshot: ${previousState ? `\`${previousState.observedAt}\`` : 'none'}`,
     '',
@@ -393,6 +412,55 @@ async function writeStepSummary(previousState, currentState, changes) {
       ? changes.map((change) => `- \`${change.track}\`: ${change.addedVersionCodes.join(', ')}`)
       : ['- none']),
     '',
+    '### Release Notes',
+    '',
+    ...(releaseNoteLines.length > 0 ? releaseNoteLines : ['- none']),
+    '',
   ];
   await appendFile(summaryPath, `${lines.join('\n')}\n`);
+}
+
+function formatTrackReleaseNotes(track) {
+  return track.releases.flatMap((release) => {
+    const versionCodes = release.versionCodes.join(', ') || 'unknown';
+    const releaseName = release.name ? ` / ${release.name}` : '';
+    return release.releaseNotes.map((releaseNote) => (
+      [
+        `#### ${track.track} / versionCode ${versionCodes}${releaseName} / ${releaseNote.language}`,
+        '',
+        '```text',
+        releaseNote.text.trim(),
+        '```',
+        '',
+      ].join('\n')
+    ));
+  });
+}
+
+async function writeFailureStepSummary(error) {
+  const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+  if (!summaryPath) {
+    return;
+  }
+  const lines = [
+    '## Google Play Release Watcher',
+    '',
+    'Status: failed',
+    `Package: \`${packageName}\``,
+    `Play Store: [${packageName}](${getPlayStoreUrl(packageName)})`,
+    `Configured tracks: ${tracks.map((track) => `\`${track}\``).join(', ')}`,
+    '',
+    '### Error',
+    '',
+    '```text',
+    error.message,
+    error.cause ? String(error.cause) : '',
+    '```',
+    '',
+  ];
+  await appendFile(summaryPath, `${lines.join('\n')}\n`);
+}
+
+function getPlayStoreUrl(targetPackageName) {
+  return `https://play.google.com/store/apps/details?id=${encodeURIComponent(targetPackageName)}`;
 }
