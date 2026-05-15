@@ -2,8 +2,9 @@ name: Check Google Play Release
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17 * * * *"
+  push:
+    branches:
+      - main
 
 permissions:
   actions: write
