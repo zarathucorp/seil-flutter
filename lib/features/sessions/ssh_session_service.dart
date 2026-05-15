@@ -16,10 +16,11 @@ const _tmuxDelimiter = '|||';
 const _tmuxCaptureMarker = '__SEIL_TMUX_CAPTURE_META__';
 const _tmuxWindowMarker = '__SEIL_TMUX_WINDOWS__';
 const _tmuxPanePathMarker = '__SEIL_TMUX_PANE_PATHS__';
+const _tmuxPaneTailMarker = '__SEIL_TMUX_PANE_TAILS__';
 const _sshClosedMessage = SeilErrorCodes.reconnecting;
 const _sshConnectTimeout = Duration(seconds: 10);
 
-enum _TmuxListSection { sessions, windows, panes }
+enum _TmuxListSection { sessions, windows, panes, tails }
 
 abstract class SshSessionService {
   Future<LiveSshSession> connect({
@@ -493,6 +494,8 @@ class LiveSshSession {
         'tmux list-windows -a -F "W$_tmuxDelimiter#{session_name}$_tmuxDelimiter#{window_flags}$_tmuxDelimiter#{window_activity_flag}$_tmuxDelimiter#{window_bell_flag}$_tmuxDelimiter#{window_activity}$_tmuxDelimiter#{window_name}" 2>/dev/null || true',
         'printf "\\n$_tmuxPanePathMarker\\n"',
         'tmux list-panes -a -F "P$_tmuxDelimiter#{session_name}$_tmuxDelimiter#{pane_active}$_tmuxDelimiter#{pane_current_path}$_tmuxDelimiter#{pane_title}" 2>/dev/null || true',
+        'printf "\\n$_tmuxPaneTailMarker\\n"',
+        'tmux list-panes -a -F "T$_tmuxDelimiter#{session_name}$_tmuxDelimiter#{pane_active}$_tmuxDelimiter#{pane_id}" 2>/dev/null | while IFS= read -r line; do session_name=\$(printf "%s" "\$line" | cut -d "|" -f 4); pane_active=\$(printf "%s" "\$line" | cut -d "|" -f 7); pane_id=\$(printf "%s" "\$line" | cut -d "|" -f 10); if [ "\$pane_active" = "1" ] && [ -n "\$pane_id" ]; then printf "T$_tmuxDelimiter%s$_tmuxDelimiter%s\\n" "\$session_name" "\$pane_id"; tmux capture-pane -t "\$pane_id" -p -S -30 2>/dev/null | sed "s/^/R$_tmuxDelimiter/"; printf "E$_tmuxDelimiter%s\\n" "\$session_name"; fi; done',
       ].join('; '),
     );
     final panePaths = <String, String>{};
@@ -500,7 +503,10 @@ class LiveSshSession {
     final attentionBySession = <String, TerminalAttentionState>{};
     final terminalTitleBySession = <String, String>{};
     final windowFlagsBySession = <String, String>{};
+    final tailBySession = <String, String>{};
     final sessionLines = <String>[];
+    String? tailSessionName;
+    final tailBuffer = StringBuffer();
     var section = _TmuxListSection.sessions;
     for (final line in const LineSplitter().convert(output)) {
       if (line == _tmuxWindowMarker) {
@@ -509,6 +515,10 @@ class LiveSshSession {
       }
       if (line == _tmuxPanePathMarker) {
         section = _TmuxListSection.panes;
+        continue;
+      }
+      if (line == _tmuxPaneTailMarker) {
+        section = _TmuxListSection.tails;
         continue;
       }
       switch (section) {
@@ -532,6 +542,15 @@ class LiveSshSession {
             terminalTitleBySession: terminalTitleBySession,
           );
           break;
+        case _TmuxListSection.tails:
+          _readTmuxPaneTail(
+            line: line,
+            tailBySession: tailBySession,
+            tailSessionName: () => tailSessionName,
+            setTailSessionName: (name) => tailSessionName = name,
+            tailBuffer: tailBuffer,
+          );
+          break;
       }
     }
 
@@ -543,6 +562,15 @@ class LiveSshSession {
       }
       final name = parts[1];
       final terminalTitle = terminalTitleBySession[name];
+      final tail = tailBySession[name];
+      final screenAwareState = terminalAttentionFromTmux(
+        terminalTitle: terminalTitle,
+        terminalScreen: tail,
+        windowFlags: windowFlagsBySession[name],
+      );
+      final attentionState = screenAwareState != TerminalAttentionState.none
+          ? screenAwareState
+          : attentionBySession[name] ?? TerminalAttentionState.none;
       sessions.add(
         RemoteTmuxSession(
           name: name,
@@ -551,8 +579,7 @@ class LiveSshSession {
           createdAt: _unixSecondsStringToDate(parts[4]),
           lastActivityAt: _unixSecondsStringToDate(parts[5]),
           currentPath: panePaths[name],
-          attentionState:
-              attentionBySession[name] ?? TerminalAttentionState.none,
+          attentionState: attentionState,
           terminalTitle: terminalTitle?.trim().isNotEmpty == true
               ? terminalTitle!.trim()
               : paneTitles[name],
@@ -637,6 +664,43 @@ class LiveSshSession {
       attentionBySession[sessionName] ?? TerminalAttentionState.none,
       state,
     );
+  }
+
+  void _readTmuxPaneTail({
+    required String line,
+    required Map<String, String> tailBySession,
+    required String? Function() tailSessionName,
+    required void Function(String?) setTailSessionName,
+    required StringBuffer tailBuffer,
+  }) {
+    final parts = line.split(_tmuxDelimiter);
+    if (parts.length < 2) {
+      return;
+    }
+    if (parts.first == 'T') {
+      final sessionName = parts[1].trim();
+      if (sessionName.isEmpty) {
+        return;
+      }
+      tailBuffer.clear();
+      setTailSessionName(sessionName);
+      return;
+    }
+    if (parts.first == 'R') {
+      if (tailSessionName() == null) {
+        return;
+      }
+      tailBuffer.writeln(parts.sublist(1).join(_tmuxDelimiter));
+      return;
+    }
+    if (parts.first == 'E') {
+      final sessionName = tailSessionName();
+      if (sessionName != null && sessionName.isNotEmpty) {
+        tailBySession[sessionName] = tailBuffer.toString();
+      }
+      tailBuffer.clear();
+      setTailSessionName(null);
+    }
   }
 
   void selectTmuxSession(RemoteTmuxSession? session) {

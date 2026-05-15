@@ -10,6 +10,7 @@ const recommendedTmuxHistoryLimit = 20000;
 TerminalAttentionState terminalAttentionFromTmux({
   String? terminalTitle,
   String? windowName,
+  String? terminalScreen,
   String? windowFlags,
   String? windowActivityFlag,
   String? windowBellFlag,
@@ -18,8 +19,16 @@ TerminalAttentionState terminalAttentionFromTmux({
     terminalTitle,
     windowName,
   ].whereType<String>().join(' ').toLowerCase();
-  if (_containsActionRequiredText(text)) {
+  final screen = (terminalScreen ?? '').toLowerCase();
+  if (_containsActionRequiredText(text) ||
+      _containsActionRequiredText(screen)) {
     return TerminalAttentionState.actionRequired;
+  }
+  if (_containsRunningScreen(screen)) {
+    return TerminalAttentionState.running;
+  }
+  if (_containsCompletedScreen(screen)) {
+    return TerminalAttentionState.completed;
   }
   if (_containsRunningTitle(text)) {
     return TerminalAttentionState.running;
@@ -35,7 +44,10 @@ bool _containsActionRequiredText(String text) {
       text.contains('approval requested') ||
       text.contains('permission requested') ||
       text.contains('requires approval') ||
-      text.contains('needs approval');
+      text.contains('needs approval') ||
+      text.contains('do you want to proceed') ||
+      text.contains('allow this') ||
+      text.contains('waiting for approval');
 }
 
 bool _containsRunningTitle(String text) {
@@ -50,8 +62,14 @@ bool _containsRunningTitle(String text) {
     '⠧',
     '⠇',
     '⠏',
+    '⠂',
+    '⠐',
   ];
   if (spinnerFrames.any(text.contains)) {
+    return true;
+  }
+  final trimmed = text.trimLeft();
+  if (trimmed.startsWith('✳ ') && !trimmed.contains('claude code')) {
     return true;
   }
   final looksLikeCodexTitle = text.contains('codex') ||
@@ -61,6 +79,17 @@ bool _containsRunningTitle(String text) {
       (text.contains('working') ||
           text.contains('thinking') ||
           text.contains('running'));
+}
+
+bool _containsRunningScreen(String text) {
+  return text.contains('esc to interrupt') ||
+      text.contains('ctrl+c to interrupt') ||
+      text.contains('canoodling') ||
+      text.contains('swooping');
+}
+
+bool _containsCompletedScreen(String text) {
+  return RegExp(r'\b(cooked|worked) for \d+s\b').hasMatch(text);
 }
 
 TerminalAttentionState maxTerminalAttentionState(
@@ -79,9 +108,11 @@ TerminalAttentionState terminalAttentionFromTransition({
   if (current != TerminalAttentionState.none) {
     return current;
   }
-  if (previous == TerminalAttentionState.running ||
-      previous == TerminalAttentionState.actionRequired ||
+  if (previous == TerminalAttentionState.actionRequired ||
       previous == TerminalAttentionState.completed) {
+    return previous;
+  }
+  if (previous == TerminalAttentionState.running) {
     return TerminalAttentionState.completed;
   }
   return TerminalAttentionState.none;

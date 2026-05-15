@@ -12,6 +12,28 @@ void main() {
       );
     });
 
+    test('detects Claude running state from pane title spinner', () {
+      expect(
+        terminalAttentionFromTmux(
+          terminalTitle: '⠐ Run echo command for probe action',
+        ),
+        TerminalAttentionState.running,
+      );
+      expect(
+        terminalAttentionFromTmux(
+          terminalTitle: '✳ Run echo command for probe action',
+        ),
+        TerminalAttentionState.running,
+      );
+    });
+
+    test('does not treat idle Claude title as running', () {
+      expect(
+        terminalAttentionFromTmux(terminalTitle: '✳ Claude Code'),
+        TerminalAttentionState.none,
+      );
+    });
+
     test('detects action required title before running state', () {
       expect(
         terminalAttentionFromTmux(
@@ -35,6 +57,33 @@ void main() {
           windowActivityFlag: '1',
         ),
         TerminalAttentionState.none,
+      );
+    });
+
+    test('detects Claude completed state from captured screen tail', () {
+      expect(
+        terminalAttentionFromTmux(
+          terminalTitle: '✳ Run echo command for probe action',
+          terminalScreen: '● READY\n✻ Cooked for 2s\n❯',
+        ),
+        TerminalAttentionState.completed,
+      );
+      expect(
+        terminalAttentionFromTmux(
+          terminalTitle: '✳ Run echo command for probe action',
+          terminalScreen: '● Bash(echo seil_probe_action)\n✻ Worked for 4s\n❯',
+        ),
+        TerminalAttentionState.completed,
+      );
+    });
+
+    test('keeps Claude running while captured screen shows interrupt hint', () {
+      expect(
+        terminalAttentionFromTmux(
+          terminalTitle: '✳ Run echo command for probe action',
+          terminalScreen: 'esc to interrupt\n✻ Worked for 4s',
+        ),
+        TerminalAttentionState.running,
       );
     });
   });
@@ -84,6 +133,17 @@ void main() {
           current: TerminalAttentionState.running,
         ),
         TerminalAttentionState.running,
+      );
+    });
+
+    test('keeps action required state until a new active state is observed',
+        () {
+      expect(
+        terminalAttentionFromTransition(
+          previous: TerminalAttentionState.actionRequired,
+          current: TerminalAttentionState.none,
+        ),
+        TerminalAttentionState.actionRequired,
       );
     });
   });
