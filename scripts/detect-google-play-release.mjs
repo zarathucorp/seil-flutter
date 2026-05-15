@@ -33,7 +33,7 @@ async function main() {
   const isFirstRun = previousState == null;
 
   await writeJson(statePath, currentState);
-  await writeStepSummary(previousState, currentState, changes);
+  await writeStepSummary(previousState, currentState, changes, isFirstRun);
 
   if (changes.length === 0) {
     console.log('No new Google Play version codes detected.');
@@ -388,15 +388,17 @@ async function writeJson(path, value) {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-async function writeStepSummary(previousState, currentState, changes) {
+async function writeStepSummary(previousState, currentState, changes, isFirstRun) {
   const summaryPath = process.env.GITHUB_STEP_SUMMARY;
   if (!summaryPath) {
     return;
   }
   const releaseNoteLines = currentState.tracks.flatMap(formatTrackReleaseNotes);
+  const reportedChanges = isFirstRun ? [] : changes;
   const lines = [
     '## Google Play Release Watcher',
     '',
+    `Status: ${isFirstRun ? 'initial baseline saved' : 'checked'}`,
     `Package: \`${currentState.packageName}\``,
     `Play Store: [${currentState.packageName}](${getPlayStoreUrl(currentState.packageName)})`,
     `Observed at: \`${currentState.observedAt}\``,
@@ -408,8 +410,8 @@ async function writeStepSummary(previousState, currentState, changes) {
     '',
     '### New version codes',
     '',
-    ...(changes.length > 0
-      ? changes.map((change) => `- \`${change.track}\`: ${change.addedVersionCodes.join(', ')}`)
+    ...(reportedChanges.length > 0
+      ? reportedChanges.map((change) => `- \`${change.track}\`: ${change.addedVersionCodes.join(', ')}`)
       : ['- none']),
     '',
     '### Release Notes',
