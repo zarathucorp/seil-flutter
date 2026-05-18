@@ -81,7 +81,7 @@ class SessionRetentionService : Service() {
             Notification.Builder(this)
         }
         return builder
-            .setSmallIcon(android.R.drawable.stat_sys_upload_done)
+            .setSmallIcon(R.drawable.ic_seil_notification)
             .setContentTitle("Seil session active")
             .setContentText("Keeping $sessionLabel alive for up to $minutes min.")
             .setContentIntent(contentIntent)

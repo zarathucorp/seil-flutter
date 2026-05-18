@@ -104,6 +104,55 @@ class SeilLocalizations {
         zh: '减少终端渲染范围和视觉效果，优先提升输入响应速度。',
       );
 
+  String get terminalNotifications => _t(
+        en: 'Terminal notifications',
+        ko: '터미널 알림',
+        ja: 'ターミナル通知',
+        zh: '终端通知',
+      );
+
+  String get terminalNotificationsDescription => _t(
+        en: 'Send an Android notification when a tmux tab completes work or needs action.',
+        ko: 'tmux 탭의 작업 완료 또는 추가 액션 요청을 Android 알림으로 보냅니다.',
+        ja: 'tmux タブの完了や追加アクション要求を Android 通知で知らせます。',
+        zh: '当 tmux 标签完成工作或需要操作时发送 Android 通知。',
+      );
+
+  String get terminalNotificationTail => _t(
+        en: 'Include terminal output',
+        ko: '터미널 출력 포함',
+        ja: 'ターミナル出力を含める',
+        zh: '包含终端输出',
+      );
+
+  String get terminalNotificationTailDescription => _t(
+        en: 'Adds the last 10 non-empty terminal lines to completion and action notifications.',
+        ko: '완료/추가 액션 알림에 마지막 터미널 출력 10줄을 함께 표시합니다.',
+        ja: '完了/追加アクション通知に最後のターミナル出力 10 行を追加します。',
+        zh: '在完成/需要操作通知中附加最后 10 行非空终端输出。',
+      );
+
+  String terminalWorkCompleteNotification(int tabNumber) => _t(
+        en: '$tabNumber: Work complete',
+        ko: '$tabNumber: 작업 완료',
+        ja: '$tabNumber: 作業完了',
+        zh: '$tabNumber: 工作完成',
+      );
+
+  String terminalActionRequiredNotification(int tabNumber) => _t(
+        en: '$tabNumber: Additional action requested',
+        ko: '$tabNumber: 추가 액션 요청',
+        ja: '$tabNumber: 追加アクション要求',
+        zh: '$tabNumber: 请求追加操作',
+      );
+
+  String terminalStateChangedNotification(int tabNumber) => _t(
+        en: '$tabNumber: Terminal state changed',
+        ko: '$tabNumber: 터미널 상태 변경',
+        ja: '$tabNumber: ターミナル状態変更',
+        zh: '$tabNumber: 终端状态变更',
+      );
+
   String get language => _t(
         en: 'Language',
         ko: '언어',
@@ -350,6 +399,20 @@ class SeilLocalizations {
         ko: '열기',
         ja: '開く',
         zh: '打开',
+      );
+
+  String get openNow => _t(
+        en: 'Open now',
+        ko: '바로 열기',
+        ja: '今すぐ開く',
+        zh: '立即打开',
+      );
+
+  String get download => _t(
+        en: 'Download',
+        ko: '다운로드',
+        ja: 'ダウンロード',
+        zh: '下载',
       );
 
   String get servers => _t(
@@ -940,6 +1003,41 @@ class SeilLocalizations {
         zh: '已上传 $uploaded 个，跳过 $skipped 个',
       );
 
+  String get selectFilesToDelete => _t(
+        en: 'Select files to delete',
+        ko: '삭제할 파일 선택',
+        ja: '削除するファイルを選択',
+        zh: '选择要删除的文件',
+      );
+
+  String selectedFiles(int count) => _t(
+        en: '$count selected',
+        ko: '$count개 선택됨',
+        ja: '$count 件選択中',
+        zh: '已选择 $count 个',
+      );
+
+  String deleteFilesMessage(int count) => _t(
+        en: 'Delete $count file${count == 1 ? '' : 's'}? This cannot be undone.',
+        ko: '$count개 파일을 삭제할까요? 이 작업은 되돌릴 수 없습니다.',
+        ja: '$count 件のファイルを削除しますか？この操作は元に戻せません。',
+        zh: '删除 $count 个文件？此操作无法撤销。',
+      );
+
+  String deletedFiles(int count) => _t(
+        en: 'Deleted $count file${count == 1 ? '' : 's'}.',
+        ko: '$count개 파일을 삭제했습니다.',
+        ja: '$count 件のファイルを削除しました。',
+        zh: '已删除 $count 个文件。',
+      );
+
+  String deleteFailed(Object error) => _t(
+        en: 'Delete failed: $error',
+        ko: '삭제 실패: $error',
+        ja: '削除に失敗しました: $error',
+        zh: '删除失败：$error',
+      );
+
   String get folderName => _t(
         en: 'Folder name',
         ko: '폴더 이름',
@@ -1008,6 +1106,27 @@ class SeilLocalizations {
         ko: '파일을 저장했습니다.',
         ja: 'ファイルを保存しました。',
         zh: '文件已保存。',
+      );
+
+  String get fileDownloaded => _t(
+        en: 'File downloaded.',
+        ko: '파일을 다운로드했습니다.',
+        ja: 'ファイルをダウンロードしました。',
+        zh: '文件已下载。',
+      );
+
+  String openFileFailed(Object error) => _t(
+        en: 'Open failed: $error',
+        ko: '열기 실패: $error',
+        ja: '開くことができませんでした: $error',
+        zh: '打开失败：$error',
+      );
+
+  String downloadFailed(Object error) => _t(
+        en: 'Download failed: $error',
+        ko: '다운로드 실패: $error',
+        ja: 'ダウンロードに失敗しました: $error',
+        zh: '下载失败：$error',
       );
 
   String saveFailed(Object error) => _t(

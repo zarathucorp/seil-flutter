@@ -292,7 +292,7 @@ class _ServerCard extends StatelessWidget {
           ),
           title: Text(connection.displayName),
           subtitle: Text(
-            '${connection.username}@${connection.host}:${connection.port} · history ${connection.tmuxHistoryLimit} · ${l10n.authModeLabel(connection.authMode)} · ${connecting ? l10n.connecting : needsSecret ? l10n.secretRequired : l10n.quickConnect}',
+            '${connection.username}@${connection.host}:${connection.port} · ${l10n.authModeLabel(connection.authMode)} · ${connecting ? l10n.connecting : needsSecret ? l10n.secretRequired : l10n.quickConnect}',
           ),
           trailing: connecting
               ? const SizedBox(

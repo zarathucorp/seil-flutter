@@ -62,6 +62,26 @@ class AdminSettingsScreen extends StatelessWidget {
               ),
             ),
             Card(
+              child: SwitchListTile(
+                secondary: const Icon(Icons.notifications_active_outlined),
+                title: Text(l10n.terminalNotifications),
+                subtitle: Text(l10n.terminalNotificationsDescription),
+                value: state.terminalAttentionNotificationsEnabled,
+                onChanged: state.setTerminalAttentionNotificationsEnabled,
+              ),
+            ),
+            Card(
+              child: SwitchListTile(
+                secondary: const Icon(Icons.notes_outlined),
+                title: Text(l10n.terminalNotificationTail),
+                subtitle: Text(l10n.terminalNotificationTailDescription),
+                value: state.terminalAttentionNotificationTailEnabled,
+                onChanged: state.terminalAttentionNotificationsEnabled
+                    ? state.setTerminalAttentionNotificationTailEnabled
+                    : null,
+              ),
+            ),
+            Card(
               child: ListTile(
                 leading: const Icon(Icons.language),
                 title: Text(l10n.language),

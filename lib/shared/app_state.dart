@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 
 import '../core/localization/seil_error_codes.dart';
 import '../core/localization/seil_localizations.dart';
 import '../core/platform/session_retention_service.dart';
+import '../core/platform/terminal_notification_service.dart';
 import '../core/settings/app_settings_repository.dart';
 import '../features/auth/auth_repository.dart';
 import '../features/connections/connection_repository.dart';
@@ -21,6 +23,7 @@ class AppState extends ChangeNotifier {
     required this.settingsRepository,
     required this.sshSessionService,
     this.sessionRetentionService = const SessionRetentionService(),
+    this.terminalNotificationService = const TerminalNotificationService(),
     ReconnectPolicy? reconnectPolicy,
   }) : reconnectPolicy = reconnectPolicy ?? ReconnectPolicy();
 
@@ -30,6 +33,7 @@ class AppState extends ChangeNotifier {
   final AppSettingsRepository settingsRepository;
   final SshSessionService sshSessionService;
   final SessionRetentionService sessionRetentionService;
+  final TerminalNotificationService terminalNotificationService;
   final ReconnectPolicy reconnectPolicy;
 
   SeilUser? currentUser;
@@ -41,6 +45,11 @@ class AppState extends ChangeNotifier {
   final Map<String, String> _sessionNames = {};
   final Map<String, SessionTag> _tmuxTags = {};
   final Map<String, TmuxCaptureFrame> _terminalFrames = {};
+  final Map<Object, StreamSubscription<TmuxAttentionSignal>>
+      _tmuxAttentionSubscriptions = {};
+  final Map<Object, Timer> _tmuxAttentionRefreshTimers = {};
+  final Map<int, int> _terminalAttentionNotificationSerials = {};
+  final Map<int, String> _terminalAttentionNotificationBodies = {};
   final Map<String, _CachedDirectory> _directoryCache = {};
   final Map<String, List<String>> _directoryBackStacks = {};
   final Map<String, String> _reconnectSecrets = {};
@@ -51,6 +60,8 @@ class AppState extends ChangeNotifier {
   bool reconnecting = false;
   bool loginPasswordEnabled = false;
   bool lowEndModeEnabled = false;
+  bool terminalAttentionNotificationsEnabled = false;
+  bool terminalAttentionNotificationTailEnabled = true;
   String appLanguageCode = AppSettingsRepository.systemLanguageCode;
   List<String> keyboardMacros = List<String>.filled(
     AppSettingsRepository.keyboardMacroCount,
@@ -61,15 +72,25 @@ class AppState extends ChangeNotifier {
   bool errorShowsPopup = true;
   int errorSerial = 0;
   int _busyDepth = 0;
+  int _terminalAttentionNotificationSerial = 0;
   Future<void> _sessionStartTail = Future.value();
   DateTime? _backgroundedAt;
   DateTime? _lastResumedAt;
   Timer? _backgroundKeepAliveTimer;
   Timer? _backgroundRetentionTimer;
   Timer? _reconnectRetryTimer;
+  bool isInForeground = true;
+  TerminalNotificationLaunchTarget? _pendingTerminalNotificationTarget;
 
   static const _directoryCacheTtl = Duration(seconds: 20);
   static const _reconnectErrorDelay = Duration(seconds: 5);
+  static const _terminalAttentionPreviewLines = 10;
+  static const _terminalAttentionNotificationSettleDelay =
+      Duration(milliseconds: 700);
+  static const _terminalAttentionNotificationRetryDelays = [
+    Duration(milliseconds: 900),
+    Duration(milliseconds: 1400),
+  ];
   static const backgroundRetentionDuration = Duration(minutes: 10);
   static const _backgroundKeepAliveInterval = Duration(seconds: 25);
   static const hotResumeWindow = backgroundRetentionDuration;
@@ -84,8 +105,15 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> initialize() async {
+    terminalNotificationService.setLaunchTargetHandler(
+      (target) => unawaited(focusTerminalNotificationTarget(target)),
+    );
     loginPasswordEnabled = await settingsRepository.isLoginPasswordEnabled();
     lowEndModeEnabled = await settingsRepository.isLowEndModeEnabled();
+    terminalAttentionNotificationsEnabled =
+        await settingsRepository.areTerminalAttentionNotificationsEnabled();
+    terminalAttentionNotificationTailEnabled =
+        await settingsRepository.isTerminalAttentionNotificationTailEnabled();
     appLanguageCode = await settingsRepository.loadAppLanguageCode();
     keyboardMacros = await settingsRepository.loadKeyboardMacros();
     needsBootstrap = !(await authRepository.hasUsers());
@@ -93,14 +121,21 @@ class AppState extends ChangeNotifier {
       connections = await connectionRepository.listConnections();
       trustedHostKeys = await hostKeyRepository.listTrustedHostKeys();
     }
+    final launchTarget =
+        await terminalNotificationService.consumeLaunchTarget();
+    if (launchTarget != null) {
+      unawaited(focusTerminalNotificationTarget(launchTarget));
+    }
   }
 
   void enterBackground() {
+    isInForeground = false;
     _backgroundedAt ??= DateTime.now();
     _startBackgroundRetention();
   }
 
   void resumeFromBackground() {
+    isInForeground = true;
     _stopBackgroundRetention();
     final now = DateTime.now();
     final backgroundedAt = _backgroundedAt;
@@ -145,14 +180,14 @@ class AppState extends ChangeNotifier {
     _backgroundKeepAliveTimer?.cancel();
     _backgroundKeepAliveTimer = Timer.periodic(
       _backgroundKeepAliveInterval,
-      (_) => unawaited(pingLiveSessions()),
+      (_) => unawaited(_backgroundSessionTick()),
     );
     _backgroundRetentionTimer?.cancel();
     _backgroundRetentionTimer = Timer(
       backgroundRetentionDuration,
       _stopBackgroundRetention,
     );
-    unawaited(pingLiveSessions());
+    unawaited(_backgroundSessionTick());
   }
 
   void _stopBackgroundRetention() {
@@ -163,10 +198,19 @@ class AppState extends ChangeNotifier {
     unawaited(sessionRetentionService.stop());
   }
 
+  Future<void> _backgroundSessionTick() async {
+    await pingLiveSessions();
+    if (terminalAttentionNotificationsEnabled) {
+      await refreshActiveTmuxSessions(silent: true);
+    }
+  }
+
   @override
   void dispose() {
     _stopBackgroundRetention();
     _reconnectRetryTimer?.cancel();
+    _cancelTmuxAttentionObservers();
+    terminalNotificationService.setLaunchTargetHandler(null);
     super.dispose();
   }
 
@@ -219,6 +263,7 @@ class AppState extends ChangeNotifier {
     _stopBackgroundRetention();
     _reconnectRetryTimer?.cancel();
     _reconnectRetryTimer = null;
+    _cancelTmuxAttentionObservers();
     activeSession = null;
     activeDirectory = null;
     currentUser = null;
@@ -299,6 +344,49 @@ class AppState extends ChangeNotifier {
       await settingsRepository.setLowEndModeEnabled(enabled);
     } catch (error) {
       lowEndModeEnabled = previous;
+      _setError(seilLocalizedErrorMessage(appLanguageCode, error),
+          showPopup: false);
+      notifyListeners();
+    }
+  }
+
+  Future<void> setTerminalAttentionNotificationsEnabled(bool enabled) async {
+    if (terminalAttentionNotificationsEnabled == enabled) {
+      return;
+    }
+    var nextEnabled = enabled;
+    if (enabled) {
+      nextEnabled = await terminalNotificationService.requestPermission();
+    }
+    final previous = terminalAttentionNotificationsEnabled;
+    terminalAttentionNotificationsEnabled = nextEnabled;
+    notifyListeners();
+    try {
+      await settingsRepository
+          .setTerminalAttentionNotificationsEnabled(nextEnabled);
+    } catch (error) {
+      terminalAttentionNotificationsEnabled = previous;
+      _setError(seilLocalizedErrorMessage(appLanguageCode, error),
+          showPopup: false);
+      notifyListeners();
+    }
+  }
+
+  Future<void> setTerminalAttentionNotificationTailEnabled(
+    bool enabled,
+  ) async {
+    if (terminalAttentionNotificationTailEnabled == enabled) {
+      return;
+    }
+    final previous = terminalAttentionNotificationTailEnabled;
+    terminalAttentionNotificationTailEnabled = enabled;
+    notifyListeners();
+    try {
+      await settingsRepository.setTerminalAttentionNotificationTailEnabled(
+        enabled,
+      );
+    } catch (error) {
+      terminalAttentionNotificationTailEnabled = previous;
       _setError(seilLocalizedErrorMessage(appLanguageCode, error),
           showPopup: false);
       notifyListeners();
@@ -438,12 +526,53 @@ class AppState extends ChangeNotifier {
     sessionPaneIndexes[terminalFrameKey(session)] = initialPaneIndex;
     activeSession = session;
     activeDirectory = directory;
+    _ensureTmuxAttentionObserver(session);
+    unawaited(_applyPendingTerminalNotificationTarget());
   }
 
   void selectSession(LiveSshSession session) {
     activeSession = session;
     activeDirectory = sessionDirectories[terminalFrameKey(session)];
     notifyListeners();
+  }
+
+  Future<void> focusTerminalNotificationTarget(
+    TerminalNotificationLaunchTarget target,
+  ) async {
+    final connectionFingerprint = target.connectionFingerprint.trim();
+    final tmuxSessionName = target.tmuxSessionName.trim();
+    if (connectionFingerprint.isEmpty || tmuxSessionName.isEmpty) {
+      return;
+    }
+    final session = _liveSessionForConnectionFingerprint(connectionFingerprint);
+    if (session == null) {
+      _pendingTerminalNotificationTarget = target;
+      return;
+    }
+    activeSession = session;
+    activeDirectory = sessionDirectories[terminalFrameKey(session)];
+    notifyListeners();
+    var tmuxSession = _tmuxSessionByName(session, tmuxSessionName);
+    if (tmuxSession == null && session.tmuxAvailable) {
+      try {
+        final previous = List<RemoteTmuxSession>.from(session.tmuxSessions);
+        final sessions = _resolveTmuxAttentionTransitions(
+          source: session,
+          previous: previous,
+          current: await session.listTmuxSessions(),
+        );
+        _syncTmuxSessionsForClient(session, sessions);
+        tmuxSession = _tmuxSessionByName(session, tmuxSessionName);
+      } catch (_) {
+        return;
+      }
+    }
+    if (tmuxSession == null) {
+      return;
+    }
+    _pendingTerminalNotificationTarget = null;
+    await selectTmuxSession(tmuxSession);
+    await _sendTerminalNotificationAction(session, target);
   }
 
   String terminalFrameKey(LiveSshSession session) {
@@ -510,11 +639,21 @@ class AppState extends ChangeNotifier {
     if (silent) {
       try {
         final previous = List<RemoteTmuxSession>.from(session.tmuxSessions);
-        final sessions = await session.listTmuxSessions();
+        final sessions = _resolveTmuxAttentionTransitions(
+          source: session,
+          previous: previous,
+          current: await session.listTmuxSessions(),
+        );
         if (_tmuxSessionListsEqual(previous, sessions)) {
+          _syncTmuxSessionsForClient(session, sessions);
           return;
         }
         _syncTmuxSessionsForClient(session, sessions);
+        unawaited(_notifyTerminalAttentionTransitions(
+          source: session,
+          previous: previous,
+          current: sessions,
+        ));
         notifyListeners();
       } catch (_) {
         return;
@@ -522,7 +661,18 @@ class AppState extends ChangeNotifier {
       return;
     }
     await _run(() async {
-      _syncTmuxSessionsForClient(session, await session.listTmuxSessions());
+      final previous = List<RemoteTmuxSession>.from(session.tmuxSessions);
+      final sessions = _resolveTmuxAttentionTransitions(
+        source: session,
+        previous: previous,
+        current: await session.listTmuxSessions(),
+      );
+      _syncTmuxSessionsForClient(session, sessions);
+      unawaited(_notifyTerminalAttentionTransitions(
+        source: session,
+        previous: previous,
+        current: sessions,
+      ));
     });
   }
 
@@ -545,6 +695,38 @@ class AppState extends ChangeNotifier {
           ? tmuxSession.currentPath!.trim()
           : session.currentPath;
       await loadDirectory(path, addToHistory: false);
+    }
+  }
+
+  void acknowledgeCompletedTmuxSession(RemoteTmuxSession tmuxSession) {
+    if (tmuxSession.attentionState != TerminalAttentionState.completed) {
+      return;
+    }
+    final session = activeSession;
+    if (session == null) {
+      return;
+    }
+    var changed = false;
+    for (final liveSession in liveSessions) {
+      if (liveSession.client != session.client) {
+        continue;
+      }
+      final nextSessions = [
+        for (final item in liveSession.tmuxSessions)
+          item.name == tmuxSession.name
+              ? _copyTmuxSessionWithAttention(
+                  item,
+                  TerminalAttentionState.none,
+                )
+              : item,
+      ];
+      if (!_tmuxSessionListsEqual(liveSession.tmuxSessions, nextSessions)) {
+        liveSession.tmuxSessions = nextSessions;
+        changed = true;
+      }
+    }
+    if (changed) {
+      notifyListeners();
     }
   }
 
@@ -613,6 +795,10 @@ class AppState extends ChangeNotifier {
                   createdAt: tmuxSession.createdAt,
                   lastActivityAt: tmuxSession.lastActivityAt,
                   currentPath: trimmed,
+                  attentionState: tmuxSession.attentionState,
+                  attentionPaneId: tmuxSession.attentionPaneId,
+                  terminalTitle: tmuxSession.terminalTitle,
+                  windowFlags: tmuxSession.windowFlags,
                 )
               : tmuxSession,
       ];
@@ -738,7 +924,11 @@ class AppState extends ChangeNotifier {
     _sessionNames.remove(session.id);
     _terminalFrames.removeWhere((key, _) => key.startsWith('${session.id}:'));
     _directoryCache.removeWhere((key, _) => key.startsWith('${session.id}:'));
-    session.close(closeClient: !_hasOtherSessionsOnClient(session));
+    final closeClient = !_hasOtherSessionsOnClient(session);
+    if (closeClient) {
+      _cancelTmuxAttentionObserver(session.client);
+    }
+    session.close(closeClient: closeClient);
     if (!_hasOtherSessionsForConnection(session.connection)) {
       _reconnectSecrets.remove(session.connection.fingerprint);
       reconnectPolicy.clear(session.connection.fingerprint);
@@ -998,6 +1188,29 @@ class AppState extends ChangeNotifier {
     });
   }
 
+  Future<void> deleteFileEntries(List<RemoteFileEntry> entries) async {
+    final session = activeSession;
+    final directory = activeDirectory;
+    final files = entries.where((entry) => !entry.isDirectory).toList();
+    if (session == null || directory == null || files.isEmpty) {
+      return;
+    }
+    final workspaceKey = terminalFrameKey(session);
+    await _run(() async {
+      for (final entry in files) {
+        await session.deleteRemoteFile(entry.path);
+      }
+      _invalidateDirectory(session, directory.currentPath);
+      final refreshed = await session.listDirectory(directory.currentPath);
+      sessionDirectories[workspaceKey] = refreshed;
+      _cacheDirectory(session, refreshed);
+      if (activeSession?.id == session.id &&
+          terminalFrameKey(activeSession!) == workspaceKey) {
+        activeDirectory = refreshed;
+      }
+    });
+  }
+
   Future<void> uploadFileStream({
     required String directoryPath,
     required String name,
@@ -1178,6 +1391,8 @@ class AppState extends ChangeNotifier {
     sessionPaneIndexes[terminalFrameKey(session)] = initialPaneIndex;
     activeSession = session;
     activeDirectory = directory;
+    _ensureTmuxAttentionObserver(session);
+    unawaited(_applyPendingTerminalNotificationTarget());
   }
 
   void _syncTmuxSessionsForClient(
@@ -1197,6 +1412,405 @@ class AppState extends ChangeNotifier {
       }
     }
     source.tmuxSessions = List<RemoteTmuxSession>.from(nextSessions);
+    _ensureTmuxAttentionObserver(source);
+  }
+
+  void _ensureTmuxAttentionObserver(LiveSshSession source) {
+    if (!source.tmuxAvailable ||
+        _tmuxAttentionSubscriptions.containsKey(source.client)) {
+      return;
+    }
+    final stream = source.startTmuxControlModeObserver();
+    if (stream == null) {
+      return;
+    }
+    _tmuxAttentionSubscriptions[source.client] = stream.listen(
+      (signal) => _handleTmuxAttentionSignal(source, signal),
+      onDone: () => _tmuxAttentionSubscriptions.remove(source.client),
+      onError: (_) => _tmuxAttentionSubscriptions.remove(source.client),
+    );
+  }
+
+  void _handleTmuxAttentionSignal(
+    LiveSshSession source,
+    TmuxAttentionSignal signal,
+  ) {
+    if (!liveSessions.any((session) => session.client == source.client)) {
+      return;
+    }
+    if (signal.state != TerminalAttentionState.none &&
+        signal.paneId?.trim().isNotEmpty == true) {
+      unawaited(_applyTmuxAttentionSignal(source, signal));
+    }
+    _scheduleTmuxAttentionRefresh(source);
+  }
+
+  Future<void> _applyTmuxAttentionSignal(
+    LiveSshSession source,
+    TmuxAttentionSignal signal,
+  ) async {
+    final paneId = signal.paneId?.trim();
+    if (paneId == null || paneId.isEmpty) {
+      return;
+    }
+    try {
+      final tmuxName = await source.tmuxSessionNameForPane(paneId);
+      if (tmuxName == null || tmuxName.isEmpty) {
+        return;
+      }
+      final baseSessions = source.tmuxSessions;
+      if (!baseSessions.any((session) => session.name == tmuxName)) {
+        return;
+      }
+      final previous = List<RemoteTmuxSession>.from(baseSessions);
+      final next = [
+        for (final session in baseSessions)
+          session.name == tmuxName
+              ? _copyTmuxSessionWithAttention(
+                  session,
+                  _visibleTerminalAttentionState(
+                    source: source,
+                    tmuxSession: session,
+                    state: signal.state,
+                  ),
+                  attentionPaneId: paneId,
+                )
+              : session,
+      ];
+      if (_tmuxSessionListsEqual(previous, next)) {
+        return;
+      }
+      _syncTmuxSessionsForClient(source, next);
+      unawaited(_notifyTerminalAttentionTransitions(
+        source: source,
+        previous: previous,
+        current: next,
+      ));
+      notifyListeners();
+    } catch (_) {
+      return;
+    }
+  }
+
+  void _scheduleTmuxAttentionRefresh(LiveSshSession source) {
+    _tmuxAttentionRefreshTimers[source.client]?.cancel();
+    _tmuxAttentionRefreshTimers[source.client] = Timer(
+      const Duration(milliseconds: 250),
+      () async {
+        _tmuxAttentionRefreshTimers.remove(source.client);
+        try {
+          final previous = List<RemoteTmuxSession>.from(source.tmuxSessions);
+          final sessions = _resolveTmuxAttentionTransitions(
+            source: source,
+            previous: previous,
+            current: await source.listTmuxSessions(),
+          );
+          if (_tmuxSessionListsEqual(previous, sessions)) {
+            _syncTmuxSessionsForClient(source, sessions);
+            return;
+          }
+          _syncTmuxSessionsForClient(source, sessions);
+          unawaited(_notifyTerminalAttentionTransitions(
+            source: source,
+            previous: previous,
+            current: sessions,
+          ));
+          notifyListeners();
+        } catch (_) {
+          return;
+        }
+      },
+    );
+  }
+
+  List<RemoteTmuxSession> _resolveTmuxAttentionTransitions({
+    required LiveSshSession source,
+    required List<RemoteTmuxSession> previous,
+    required List<RemoteTmuxSession> current,
+  }) {
+    final previousByName = {
+      for (final session in previous) session.name: session,
+    };
+    return [
+      for (final session in current)
+        _copyTmuxSessionWithAttention(
+          session,
+          _visibleTerminalAttentionState(
+            source: source,
+            tmuxSession: session,
+            state: terminalAttentionFromFallbackTransition(
+              previous: previousByName[session.name]?.attentionState ??
+                  TerminalAttentionState.none,
+              current: session.attentionState,
+            ),
+          ),
+        ),
+    ];
+  }
+
+  TerminalAttentionState _visibleTerminalAttentionState({
+    required LiveSshSession source,
+    required RemoteTmuxSession tmuxSession,
+    required TerminalAttentionState state,
+  }) {
+    if (state == TerminalAttentionState.completed &&
+        isInForeground &&
+        source.selectedTmuxSessionName == tmuxSession.name) {
+      return TerminalAttentionState.none;
+    }
+    return state;
+  }
+
+  Future<void> _notifyTerminalAttentionTransitions({
+    required LiveSshSession source,
+    required List<RemoteTmuxSession> previous,
+    required List<RemoteTmuxSession> current,
+  }) async {
+    if (!terminalAttentionNotificationsEnabled || isInForeground) {
+      return;
+    }
+    final previousByName = {
+      for (final session in previous) session.name: session,
+    };
+    for (var index = 0; index < current.length; index += 1) {
+      final session = current[index];
+      final previousState = previousByName[session.name]?.attentionState ??
+          TerminalAttentionState.none;
+      final nextState = session.attentionState;
+      final notificationId = _terminalAttentionNotificationId(
+        source.connection.fingerprint,
+        session.name,
+      );
+      if (previousState == nextState ||
+          (nextState != TerminalAttentionState.completed &&
+              nextState != TerminalAttentionState.actionRequired)) {
+        if (previousState != nextState) {
+          _invalidateTerminalAttentionNotification(notificationId);
+        }
+        continue;
+      }
+      final tabNumber = index + 1;
+      final message = _terminalAttentionNotificationTitle(
+        tabNumber: tabNumber,
+        state: nextState,
+      );
+      final serial = _nextTerminalAttentionNotificationSerial(notificationId);
+      await Future<void>.delayed(_terminalAttentionNotificationSettleDelay);
+      if (!_isTerminalAttentionNotificationCurrent(notificationId, serial) ||
+          !terminalAttentionNotificationsEnabled ||
+          isInForeground ||
+          !liveSessions.any((session) => session.client == source.client) ||
+          !_tmuxSessionStillHasAttention(
+            source: source,
+            tmuxSessionName: session.name,
+            state: nextState,
+          )) {
+        continue;
+      }
+      final tail = terminalAttentionNotificationTailEnabled
+          ? await _captureFreshTerminalAttentionTail(
+              source: source,
+              session: session,
+              notificationId: notificationId,
+              serial: serial,
+              state: nextState,
+            )
+          : '';
+      if (!_isTerminalAttentionNotificationCurrent(notificationId, serial)) {
+        continue;
+      }
+      final trimmedTail = tail.trim();
+      final previousBody = _terminalAttentionNotificationBodies[notificationId];
+      final body = trimmedTail.isEmpty || trimmedTail == previousBody
+          ? message
+          : trimmedTail;
+      await terminalNotificationService.show(
+        notificationId: notificationId,
+        title: message,
+        body: body,
+        connectionFingerprint: source.connection.fingerprint,
+        tmuxSessionName: session.name,
+      );
+      _terminalAttentionNotificationBodies[notificationId] = body;
+    }
+  }
+
+  Future<String> _captureFreshTerminalAttentionTail({
+    required LiveSshSession source,
+    required RemoteTmuxSession session,
+    required int notificationId,
+    required int serial,
+    required TerminalAttentionState state,
+  }) async {
+    final previousBody = _terminalAttentionNotificationBodies[notificationId];
+    var tail = await source.captureTmuxSessionTail(
+      session.name,
+      paneId: session.attentionPaneId,
+      lines: _terminalAttentionPreviewLines,
+    );
+    for (final delay in _terminalAttentionNotificationRetryDelays) {
+      if (!_isTerminalAttentionNotificationCurrent(notificationId, serial) ||
+          !_tmuxSessionStillHasAttention(
+            source: source,
+            tmuxSessionName: session.name,
+            state: state,
+          ) ||
+          tail.trim().isEmpty ||
+          tail.trim() != previousBody) {
+        return tail;
+      }
+      await Future<void>.delayed(delay);
+      if (!_isTerminalAttentionNotificationCurrent(notificationId, serial)) {
+        return tail;
+      }
+      tail = await source.captureTmuxSessionTail(
+        session.name,
+        paneId: session.attentionPaneId,
+        lines: _terminalAttentionPreviewLines,
+      );
+    }
+    return tail;
+  }
+
+  int _nextTerminalAttentionNotificationSerial(int notificationId) {
+    final serial = _terminalAttentionNotificationSerial + 1;
+    _terminalAttentionNotificationSerial = serial;
+    _terminalAttentionNotificationSerials[notificationId] = serial;
+    return serial;
+  }
+
+  void _invalidateTerminalAttentionNotification(int notificationId) {
+    final serial = _terminalAttentionNotificationSerial + 1;
+    _terminalAttentionNotificationSerial = serial;
+    _terminalAttentionNotificationSerials[notificationId] = serial;
+  }
+
+  bool _isTerminalAttentionNotificationCurrent(
+    int notificationId,
+    int serial,
+  ) {
+    return _terminalAttentionNotificationSerials[notificationId] == serial;
+  }
+
+  bool _tmuxSessionStillHasAttention({
+    required LiveSshSession source,
+    required String tmuxSessionName,
+    required TerminalAttentionState state,
+  }) {
+    for (final session in source.tmuxSessions) {
+      if (session.name == tmuxSessionName) {
+        return session.attentionState == state;
+      }
+    }
+    return false;
+  }
+
+  Future<void> _applyPendingTerminalNotificationTarget() async {
+    final target = _pendingTerminalNotificationTarget;
+    if (target == null) {
+      return;
+    }
+    await focusTerminalNotificationTarget(target);
+  }
+
+  LiveSshSession? _liveSessionForConnectionFingerprint(String fingerprint) {
+    final trimmed = fingerprint.trim();
+    if (trimmed.isEmpty) {
+      return null;
+    }
+    for (final session in liveSessions) {
+      if (session.connection.fingerprint == trimmed) {
+        return session;
+      }
+    }
+    return null;
+  }
+
+  RemoteTmuxSession? _tmuxSessionByName(
+    LiveSshSession session,
+    String tmuxSessionName,
+  ) {
+    final trimmed = tmuxSessionName.trim();
+    if (trimmed.isEmpty) {
+      return null;
+    }
+    for (final tmuxSession in session.tmuxSessions) {
+      if (tmuxSession.name == trimmed) {
+        return tmuxSession;
+      }
+    }
+    return null;
+  }
+
+  Future<void> _sendTerminalNotificationAction(
+    LiveSshSession session,
+    TerminalNotificationLaunchTarget target,
+  ) async {
+    final action = target.action?.trim();
+    if (action == null || action.isEmpty) {
+      return;
+    }
+    try {
+      await session.sendTmuxNotificationAction(
+        tmuxSessionName: target.tmuxSessionName,
+        action: action,
+      );
+    } catch (_) {
+      return;
+    }
+  }
+
+  String _terminalAttentionNotificationTitle({
+    required int tabNumber,
+    required TerminalAttentionState state,
+  }) {
+    final languageCode =
+        appLanguageCode == AppSettingsRepository.systemLanguageCode
+            ? 'en'
+            : appLanguageCode;
+    final l10n = SeilLocalizations(Locale(languageCode));
+    return switch (state) {
+      TerminalAttentionState.actionRequired =>
+        l10n.terminalActionRequiredNotification(tabNumber),
+      TerminalAttentionState.completed =>
+        l10n.terminalWorkCompleteNotification(tabNumber),
+      TerminalAttentionState.running ||
+      TerminalAttentionState.none =>
+        l10n.terminalStateChangedNotification(tabNumber),
+    };
+  }
+
+  int _terminalAttentionNotificationId(
+    String connectionFingerprint,
+    String tmuxSessionName,
+  ) {
+    return Object.hash(connectionFingerprint, tmuxSessionName) & 0x7fffffff;
+  }
+
+  RemoteTmuxSession _copyTmuxSessionWithAttention(
+    RemoteTmuxSession session,
+    TerminalAttentionState attentionState, {
+    String? attentionPaneId,
+  }) {
+    final nextAttentionPaneId = attentionState == TerminalAttentionState.none
+        ? null
+        : attentionPaneId ?? session.attentionPaneId;
+    if (session.attentionState == attentionState &&
+        session.attentionPaneId == nextAttentionPaneId) {
+      return session;
+    }
+    return RemoteTmuxSession(
+      name: session.name,
+      windows: session.windows,
+      attachedClients: session.attachedClients,
+      createdAt: session.createdAt,
+      lastActivityAt: session.lastActivityAt,
+      currentPath: session.currentPath,
+      attentionState: attentionState,
+      attentionPaneId: nextAttentionPaneId,
+      terminalTitle: session.terminalTitle,
+      windowFlags: session.windowFlags,
+    );
   }
 
   void _appendSelectedTmuxSessionForClient(LiveSshSession source) {
@@ -1318,7 +1932,11 @@ class AppState extends ChangeNotifier {
           a.attachedClients != b.attachedClients ||
           a.createdAt != b.createdAt ||
           a.lastActivityAt != b.lastActivityAt ||
-          a.currentPath != b.currentPath) {
+          a.currentPath != b.currentPath ||
+          a.attentionState != b.attentionState ||
+          a.attentionPaneId != b.attentionPaneId ||
+          a.terminalTitle != b.terminalTitle ||
+          a.windowFlags != b.windowFlags) {
         return false;
       }
     }
@@ -1402,6 +2020,7 @@ class AppState extends ChangeNotifier {
     _stopBackgroundRetention();
     _reconnectRetryTimer?.cancel();
     _reconnectRetryTimer = null;
+    _cancelTmuxAttentionObservers();
     final sessions = List<LiveSshSession>.from(liveSessions);
     liveSessions.clear();
     sessionDirectories.clear();
@@ -1421,6 +2040,22 @@ class AppState extends ChangeNotifier {
         closedClients.add(session.client);
       }
     }
+  }
+
+  void _cancelTmuxAttentionObserver(Object client) {
+    _tmuxAttentionRefreshTimers.remove(client)?.cancel();
+    unawaited(_tmuxAttentionSubscriptions.remove(client)?.cancel());
+  }
+
+  void _cancelTmuxAttentionObservers() {
+    for (final timer in _tmuxAttentionRefreshTimers.values) {
+      timer.cancel();
+    }
+    _tmuxAttentionRefreshTimers.clear();
+    for (final subscription in _tmuxAttentionSubscriptions.values) {
+      unawaited(subscription.cancel());
+    }
+    _tmuxAttentionSubscriptions.clear();
   }
 
   Future<T?> _run<T>(

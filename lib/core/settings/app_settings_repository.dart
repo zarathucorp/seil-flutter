@@ -13,6 +13,10 @@ class AppSettingsRepository {
   static const _keyboardMacros = 'keyboard_macros_v1';
   static const _lowEndModeEnabled = 'low_end_mode_enabled';
   static const _appLanguageCode = 'app_language_code';
+  static const _terminalAttentionNotificationsEnabled =
+      'terminal_attention_notifications_enabled';
+  static const _terminalAttentionNotificationTailEnabled =
+      'terminal_attention_notification_tail_enabled';
   static const keyboardMacroCount = 9;
   static const systemLanguageCode = 'system';
   static const supportedLanguageCodes = [
@@ -68,6 +72,58 @@ class AppSettingsRepository {
       'app_settings',
       {
         'key': _lowEndModeEnabled,
+        'value': enabled ? '1' : '0',
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<bool> areTerminalAttentionNotificationsEnabled() async {
+    final rows = await database.db.query(
+      'app_settings',
+      columns: ['value'],
+      where: 'key = ?',
+      whereArgs: [_terminalAttentionNotificationsEnabled],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      return false;
+    }
+    return rows.first['value'] == '1';
+  }
+
+  Future<void> setTerminalAttentionNotificationsEnabled(bool enabled) {
+    return database.db.insert(
+      'app_settings',
+      {
+        'key': _terminalAttentionNotificationsEnabled,
+        'value': enabled ? '1' : '0',
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<bool> isTerminalAttentionNotificationTailEnabled() async {
+    final rows = await database.db.query(
+      'app_settings',
+      columns: ['value'],
+      where: 'key = ?',
+      whereArgs: [_terminalAttentionNotificationTailEnabled],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      return true;
+    }
+    return rows.first['value'] == '1';
+  }
+
+  Future<void> setTerminalAttentionNotificationTailEnabled(bool enabled) {
+    return database.db.insert(
+      'app_settings',
+      {
+        'key': _terminalAttentionNotificationTailEnabled,
         'value': enabled ? '1' : '0',
         'updated_at': DateTime.now().toUtc().toIso8601String(),
       },
