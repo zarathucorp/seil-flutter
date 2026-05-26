@@ -185,8 +185,9 @@ class _WorkspaceCommandBar extends StatelessWidget {
                   _ToolbarButton(
                     icon: LucideIcons.refreshCw,
                     tooltip: context.l10n.refreshSession,
-                    onPressed:
-                        state.busy ? null : () => _refreshActiveWorkspace(),
+                    onPressed: state.busy || state.reconnecting
+                        ? null
+                        : () => unawaited(state.reconnectActiveWorkspace()),
                   ),
                   _ToolbarButton(
                     icon: LucideIcons.x,
@@ -208,18 +209,6 @@ class _WorkspaceCommandBar extends StatelessWidget {
         ),
       ),
     );
-  }
-
-  Future<void> _refreshActiveWorkspace() async {
-    await state.pingLiveSessions();
-    await state.reconnectClosedSessions(force: true);
-    final directory = state.activeDirectory;
-    final futures = <Future<void>>[];
-    if (directory != null) {
-      futures.add(state.loadDirectory(directory.currentPath, force: true));
-    }
-    futures.add(state.refreshActiveTmuxSessions());
-    await Future.wait(futures);
   }
 
   Future<void> _showServerSheet(BuildContext context) {
@@ -992,9 +981,22 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
       height: 32,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
-        itemCount: sessions.length,
+        itemCount: sessions.length + 1,
         separatorBuilder: (_, __) => const SizedBox(width: 5),
         itemBuilder: (context, index) {
+          if (index == sessions.length) {
+            return _SessionAddButton(
+              tooltip: context.l10n.addNewTmuxSession,
+              onPressed: widget.state.busy
+                  ? null
+                  : () => unawaited(
+                        widget.state.createTerminalSessionFromActive(
+                          initialPaneIndex: 0,
+                          selectNewTmux: true,
+                        ),
+                      ),
+            );
+          }
           final session = sessions[index];
           return _SessionNumberButton(
             label: '${index + 1}',
@@ -1047,6 +1049,71 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
       );
     }
     return sessions;
+  }
+}
+
+class _SessionAddButton extends StatefulWidget {
+  const _SessionAddButton({
+    required this.tooltip,
+    required this.onPressed,
+  });
+
+  final String tooltip;
+  final VoidCallback? onPressed;
+
+  @override
+  State<_SessionAddButton> createState() => _SessionAddButtonState();
+}
+
+class _SessionAddButtonState extends State<_SessionAddButton> {
+  bool pressed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final disabled = widget.onPressed == null;
+    final activePress = pressed && !disabled;
+    return Tooltip(
+      message: widget.tooltip,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onPressed,
+        onTapDown: disabled ? null : (_) => _setPressed(true),
+        onTapUp: disabled ? null : (_) => _setPressed(false),
+        onTapCancel: disabled ? null : () => _setPressed(false),
+        child: AnimatedScale(
+          scale: activePress ? 0.96 : 1,
+          duration: const Duration(milliseconds: 70),
+          curve: Curves.easeOut,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 120),
+            curve: Curves.easeOut,
+            width: 32,
+            height: 30,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color:
+                  disabled ? const Color(0xFFE4E4E7) : const Color(0xFFFFFFFF),
+              border: Border.all(
+                color: disabled ? const Color(0xFFD4D4D8) : _border,
+              ),
+              borderRadius: BorderRadius.circular(7),
+            ),
+            child: Icon(
+              LucideIcons.plus,
+              size: 14,
+              color: disabled ? const Color(0xFF71717A) : _warpInk,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _setPressed(bool value) {
+    if (pressed == value || !mounted) {
+      return;
+    }
+    setState(() => pressed = value);
   }
 }
 
@@ -1371,23 +1438,27 @@ class _TmuxSessionChooser extends StatefulWidget {
 
 class _TmuxSessionChooserState extends State<_TmuxSessionChooser> {
   Timer? refreshTimer;
+  Duration? activeRefreshInterval;
   bool refreshing = false;
+
+  Duration get refreshInterval => widget.state.lowEndModeEnabled
+      ? const Duration(seconds: 4)
+      : const Duration(seconds: 2);
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance
         .addPostFrameCallback((_) => _refreshSilently(visible: true));
-    refreshTimer = Timer.periodic(
-      const Duration(seconds: 4),
-      (_) => _refreshSilently(),
-    );
+    _startRefreshTimer();
   }
 
   @override
   void didUpdateWidget(covariant _TmuxSessionChooser oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.state != widget.state) {
+    if (oldWidget.state != widget.state ||
+        activeRefreshInterval != refreshInterval) {
+      _startRefreshTimer();
       _refreshSilently();
     }
   }
@@ -1396,6 +1467,15 @@ class _TmuxSessionChooserState extends State<_TmuxSessionChooser> {
   void dispose() {
     refreshTimer?.cancel();
     super.dispose();
+  }
+
+  void _startRefreshTimer() {
+    refreshTimer?.cancel();
+    activeRefreshInterval = refreshInterval;
+    refreshTimer = Timer.periodic(
+      activeRefreshInterval!,
+      (_) => _refreshSilently(),
+    );
   }
 
   void _refreshSilently({bool visible = false}) {
@@ -1928,6 +2008,7 @@ class _TerminalPaneState extends State<TerminalPane> {
   int? pendingHistoryExpansionPreviousLineCount;
   String? localError;
   String? activeFrameKey;
+  int pollGeneration = 0;
 
   int get _minPollIntervalMs => widget.state.lowEndModeEnabled ? 120 : 50;
 
@@ -2010,6 +2091,8 @@ class _TerminalPaneState extends State<TerminalPane> {
 
   void _restoreCachedFrame() {
     reconnectNoticeTimer?.cancel();
+    pollGeneration += 1;
+    polling = false;
     final session = widget.state.activeSession;
     activeFrameKey =
         session == null ? null : widget.state.terminalFrameKey(session);
@@ -2051,6 +2134,7 @@ class _TerminalPaneState extends State<TerminalPane> {
     }
     polling = true;
     LiveSshSession? polledSession;
+    final generation = pollGeneration;
     final startedAt = DateTime.now();
     try {
       final live = widget.state.activeSession;
@@ -2064,7 +2148,9 @@ class _TerminalPaneState extends State<TerminalPane> {
         scrollbackLines: requestedScrollbackLines,
       );
       final latency = DateTime.now().difference(startedAt).inMilliseconds;
-      if (!mounted || _currentFrameKey() != liveFrameKey) {
+      if (!mounted ||
+          generation != pollGeneration ||
+          _currentFrameKey() != liveFrameKey) {
         return;
       }
       _updateHistoryExhaustion(
@@ -2109,7 +2195,12 @@ class _TerminalPaneState extends State<TerminalPane> {
     } catch (error) {
       final closed =
           polledSession?.isClosed == true || _isClosedSshError(error);
-      if (mounted) {
+      if (mounted &&
+          generation == pollGeneration &&
+          _currentFrameKey() ==
+              (polledSession == null
+                  ? null
+                  : widget.state.terminalFrameKey(polledSession))) {
         localError = closed && widget.state.shouldDeferReconnectNotice
             ? null
             : closed
@@ -2121,13 +2212,21 @@ class _TerminalPaneState extends State<TerminalPane> {
         );
       }
       if (closed) {
-        _handleClosedSession();
+        final session = polledSession;
+        if (session != null) {
+          widget.state.markSessionDisconnected(session);
+        }
+        if (generation == pollGeneration) {
+          _handleClosedSession();
+        }
       } else {
         pollIntervalMs = math.min(_maxPollIntervalMs, pollIntervalMs + 250);
       }
     } finally {
-      polling = false;
-      if (!pollingStopped) {
+      if (generation == pollGeneration) {
+        polling = false;
+      }
+      if (generation == pollGeneration && !pollingStopped) {
         _scheduleNextPoll();
       }
     }
@@ -4971,7 +5070,7 @@ class FilePreviewScreen extends StatefulWidget {
 
 class _FilePreviewScreenState extends State<FilePreviewScreen> {
   late final Future<_LoadedPreview> previewFuture;
-  final editor = TextEditingController();
+  final editor = _CodeEditingController();
   bool editing = false;
   bool saving = false;
   bool openingExternal = false;
@@ -5007,6 +5106,7 @@ class _FilePreviewScreenState extends State<FilePreviewScreen> {
     }
     final file = await widget.session.readTextFile(widget.entry.path);
     textFile = file;
+    editor.language = file.language;
     editor.text = file.content;
     return _LoadedPreview(textFile: file);
   }
@@ -5292,34 +5392,170 @@ class _UnavailableFilePreview extends StatelessWidget {
   }
 }
 
-class _CodeEditor extends StatelessWidget {
+class _CodeEditor extends StatefulWidget {
   const _CodeEditor({required this.controller, required this.language});
 
   final TextEditingController controller;
   final String? language;
 
   @override
+  State<_CodeEditor> createState() => _CodeEditorState();
+}
+
+class _CodeEditorState extends State<_CodeEditor> {
+  final scrollController = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    _syncEditorLanguage();
+    widget.controller.addListener(_refreshLineChrome);
+    scrollController.addListener(_refreshLineChrome);
+  }
+
+  @override
+  void didUpdateWidget(covariant _CodeEditor oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_refreshLineChrome);
+      widget.controller.addListener(_refreshLineChrome);
+    }
+    _syncEditorLanguage();
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_refreshLineChrome);
+    scrollController.removeListener(_refreshLineChrome);
+    scrollController.dispose();
+    super.dispose();
+  }
+
+  void _refreshLineChrome() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  void _syncEditorLanguage() {
+    final controller = widget.controller;
+    if (controller is _CodeEditingController) {
+      controller.language = widget.language;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return TextField(
-      controller: controller,
-      expands: true,
-      maxLines: null,
-      minLines: null,
-      keyboardType: TextInputType.multiline,
-      style: const TextStyle(
-        fontFamily: _terminalFontFamily,
-        fontFamilyFallback: ['FiraCodeNerdFontMono', 'monospace'],
-        fontSize: 12,
-        height: 1.35,
-      ),
-      decoration: InputDecoration(
-        border: InputBorder.none,
-        contentPadding: const EdgeInsets.all(12),
-        hintText: language == null
-            ? context.l10n.enterContent
-            : context.l10n.editLanguage(language!),
-      ),
+    const style = TextStyle(
+      fontFamily: _terminalFontFamily,
+      fontFamilyFallback: ['FiraCodeNerdFontMono', 'monospace'],
+      fontSize: 12,
+      height: 1.35,
     );
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        CustomPaint(
+          painter: _CodeLineChromePainter(
+            text: widget.controller.text,
+            scrollOffset:
+                scrollController.hasClients ? scrollController.offset : 0,
+            lineHeight: style.fontSize! * style.height!,
+          ),
+        ),
+        TextField(
+          controller: widget.controller,
+          scrollController: scrollController,
+          expands: true,
+          maxLines: null,
+          minLines: null,
+          keyboardType: TextInputType.multiline,
+          style: style,
+          decoration: InputDecoration(
+            border: InputBorder.none,
+            contentPadding: const EdgeInsets.fromLTRB(
+              _codeLineNumberGutterWidth + 12,
+              _codeEditorVerticalPadding,
+              12,
+              _codeEditorVerticalPadding,
+            ),
+            hintText: widget.language == null
+                ? context.l10n.enterContent
+                : context.l10n.editLanguage(widget.language!),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+const _codeLineNumberGutterWidth = 52.0;
+const _codeEditorVerticalPadding = 12.0;
+
+class _CodeLineChromePainter extends CustomPainter {
+  const _CodeLineChromePainter({
+    required this.text,
+    required this.scrollOffset,
+    required this.lineHeight,
+  });
+
+  final String text;
+  final double scrollOffset;
+  final double lineHeight;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final lineCount = '\n'.allMatches(text).length + 1;
+    final firstLine = (scrollOffset / lineHeight).floor().clamp(0, lineCount);
+    final lastLine =
+        ((scrollOffset + size.height) / lineHeight).ceil().clamp(0, lineCount);
+    final alternatePaint = Paint()..color = const Color(0xFFEFF6FF);
+    final dividerPaint = Paint()..color = const Color(0xFFE2E8F0);
+
+    canvas.drawRect(
+      Rect.fromLTWH(_codeLineNumberGutterWidth - 0.5, 0, 0.5, size.height),
+      dividerPaint,
+    );
+
+    for (var line = firstLine; line < lastLine; line += 1) {
+      final top = _codeEditorVerticalPadding + line * lineHeight - scrollOffset;
+      if (line.isOdd) {
+        canvas.drawRect(
+          Rect.fromLTWH(
+              _codeLineNumberGutterWidth, top, size.width, lineHeight),
+          alternatePaint,
+        );
+      }
+      final painter = TextPainter(
+        text: TextSpan(
+          text: '${line + 1}',
+          style: const TextStyle(
+            color: Color(0xFF94A3B8),
+            fontFamily: _terminalFontFamily,
+            fontFamilyFallback: ['FiraCodeNerdFontMono', 'monospace'],
+            fontSize: 11,
+            height: 1,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+        maxLines: 1,
+      )..layout(maxWidth: _codeLineNumberGutterWidth - 12);
+      painter.paint(
+        canvas,
+        Offset(
+          _codeLineNumberGutterWidth - 8 - painter.width,
+          top + (lineHeight - painter.height) / 2,
+        ),
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _CodeLineChromePainter oldDelegate) {
+    return oldDelegate.text != text ||
+        oldDelegate.scrollOffset != scrollOffset ||
+        oldDelegate.lineHeight != lineHeight;
   }
 }
 
@@ -5330,43 +5566,117 @@ class _HighlightedCodeView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(12),
-      child: TextSelectionTheme(
-        data: const TextSelectionThemeData(
-          selectionColor: _terminalSelection,
-          selectionHandleColor: _terminalSelectionHandle,
-        ),
-        child: SelectableText.rich(
-          TextSpan(
-            style: const TextStyle(
-              color: _warpInk,
-              fontFamily: _terminalFontFamily,
-              fontFamilyFallback: ['FiraCodeNerdFontMono', 'monospace'],
-              fontSize: 12,
-              height: 1.35,
-            ),
-            children: _codeHighlightSpans(file.content, file.language),
-          ),
-        ),
+    final lines = file.content.split('\n');
+    return TextSelectionTheme(
+      data: const TextSelectionThemeData(
+        selectionColor: _terminalSelection,
+        selectionHandleColor: _terminalSelectionHandle,
       ),
+      child: ListView.builder(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        itemCount: lines.length,
+        itemBuilder: (context, index) {
+          final line = lines[index];
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: _codeLineNumberGutterWidth,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(4, 1, 8, 1),
+                  child: Align(
+                    alignment: Alignment.topRight,
+                    child: Text(
+                      '${index + 1}',
+                      style: const TextStyle(
+                        color: Color(0xFF94A3B8),
+                        fontFamily: _terminalFontFamily,
+                        fontFamilyFallback: [
+                          'FiraCodeNerdFontMono',
+                          'monospace'
+                        ],
+                        fontSize: 11,
+                        height: 1.35,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              Expanded(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: index.isOdd
+                        ? const Color(0xFFEFF6FF)
+                        : Colors.transparent,
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 1, 12, 1),
+                    child: SelectableText.rich(
+                      TextSpan(
+                        style: const TextStyle(
+                          color: _warpInk,
+                          fontFamily: _terminalFontFamily,
+                          fontFamilyFallback: [
+                            'FiraCodeNerdFontMono',
+                            'monospace'
+                          ],
+                          fontSize: 12,
+                          height: 1.35,
+                        ),
+                        children: _codeHighlightSpans(line, file.language),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _CodeEditingController extends TextEditingController {
+  String? language;
+
+  @override
+  TextSpan buildTextSpan({
+    required BuildContext context,
+    TextStyle? style,
+    required bool withComposing,
+  }) {
+    return TextSpan(
+      style: style,
+      children: _codeHighlightSpans(text, language),
     );
   }
 }
 
 List<TextSpan> _codeHighlightSpans(String source, String? language) {
   final keywords = _keywordsForLanguage(language);
-  if (source.isEmpty || keywords.isEmpty && language != 'markdown') {
+  final normalizedLanguage = language?.toLowerCase();
+  final isMarkup = _markupLanguages.contains(normalizedLanguage);
+  if (source.isEmpty ||
+      keywords.isEmpty && language != 'markdown' && !isMarkup) {
     return [TextSpan(text: source)];
   }
 
   final spans = <TextSpan>[];
   final pattern = language == 'markdown'
       ? RegExp(r'(^#{1,6}\s.*$|`[^`]*`|\*\*[^*]+\*\*)', multiLine: true)
-      : RegExp(
-          r'''(#.*$|//.*$|".*?"|'.*?'|\b[A-Za-z_][A-Za-z0-9_.]*\b)''',
-          multiLine: true,
-        );
+      : isMarkup
+          ? RegExp(
+              r'''(<!--.*?-->|</?[A-Za-z][A-Za-z0-9:-]*(?:\s+[A-Za-z_:][A-Za-z0-9:_.-]*(?:=(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*\s*/?>|".*?"|'.*?'|\b[A-Za-z_][A-Za-z0-9_.:-]*\b)''',
+              multiLine: true,
+              dotAll: true,
+            )
+          : RegExp(
+              r'''(#.*$|//.*$|/\*.*?\*/|".*?"|'.*?'|`.*?`|\b[A-Za-z_][A-Za-z0-9_.]*\b)''',
+              multiLine: true,
+              dotAll: true,
+            );
   var index = 0;
   for (final match in pattern.allMatches(source)) {
     if (match.start > index) {
@@ -5408,6 +5718,97 @@ Set<String> _keywordsForLanguage(String? language) {
         'while',
         'with',
       },
+    'c' || 'h' => _cKeywords,
+    'cc' || 'cpp' || 'cxx' || 'hpp' || 'hh' || 'hxx' => {
+        ..._cKeywords,
+        'alignas',
+        'alignof',
+        'bool',
+        'catch',
+        'class',
+        'constexpr',
+        'const_cast',
+        'decltype',
+        'delete',
+        'dynamic_cast',
+        'explicit',
+        'export',
+        'false',
+        'friend',
+        'mutable',
+        'namespace',
+        'new',
+        'noexcept',
+        'nullptr',
+        'operator',
+        'private',
+        'protected',
+        'public',
+        'reinterpret_cast',
+        'static_assert',
+        'static_cast',
+        'template',
+        'this',
+        'throw',
+        'true',
+        'try',
+        'typename',
+        'using',
+        'virtual',
+      },
+    'js' || 'mjs' || 'jsx' || 'javascript' => _javascriptKeywords,
+    'ts' || 'tsx' || 'typescript' => {
+        ..._javascriptKeywords,
+        'abstract',
+        'as',
+        'declare',
+        'enum',
+        'implements',
+        'interface',
+        'keyof',
+        'namespace',
+        'private',
+        'protected',
+        'public',
+        'readonly',
+        'type',
+      },
+    'html' || 'xml' => const {
+        'html',
+        'head',
+        'body',
+        'div',
+        'span',
+        'script',
+        'style',
+        'link',
+        'meta',
+        'title',
+        'class',
+        'id',
+        'href',
+        'src',
+        'type',
+        'rel',
+        'name',
+        'content',
+      },
+    'css' => const {
+        'align-items',
+        'background',
+        'border',
+        'color',
+        'display',
+        'flex',
+        'font',
+        'grid',
+        'height',
+        'justify-content',
+        'margin',
+        'padding',
+        'position',
+        'width',
+      },
     'r' => const {
         'function',
         'if',
@@ -5441,9 +5842,101 @@ Set<String> _keywordsForLanguage(String? language) {
   };
 }
 
+const _markupLanguages = {'html', 'xml'};
+
+const _cKeywords = {
+  'auto',
+  'break',
+  'case',
+  'char',
+  'const',
+  'continue',
+  'default',
+  'do',
+  'double',
+  'else',
+  'enum',
+  'extern',
+  'float',
+  'for',
+  'goto',
+  'if',
+  'inline',
+  'int',
+  'long',
+  'register',
+  'restrict',
+  'return',
+  'short',
+  'signed',
+  'sizeof',
+  'static',
+  'struct',
+  'switch',
+  'typedef',
+  'union',
+  'unsigned',
+  'void',
+  'volatile',
+  'while',
+};
+
+const _javascriptKeywords = {
+  'async',
+  'await',
+  'break',
+  'case',
+  'catch',
+  'class',
+  'const',
+  'continue',
+  'debugger',
+  'default',
+  'delete',
+  'do',
+  'else',
+  'export',
+  'extends',
+  'false',
+  'finally',
+  'for',
+  'from',
+  'function',
+  'if',
+  'import',
+  'in',
+  'instanceof',
+  'let',
+  'new',
+  'null',
+  'return',
+  'static',
+  'super',
+  'switch',
+  'this',
+  'throw',
+  'true',
+  'try',
+  'typeof',
+  'undefined',
+  'var',
+  'void',
+  'while',
+  'yield',
+};
+
 TextStyle _styleForToken(String token, Set<String> keywords) {
-  if (token.startsWith('#') || token.startsWith('//')) {
+  if (token.startsWith('#') ||
+      token.startsWith('//') ||
+      token.startsWith('/*') ||
+      token.startsWith('<!--')) {
     return const TextStyle(color: Color(0xFF64748B));
+  }
+  if (token.startsWith('<')) {
+    return const TextStyle(
+      color: Color(0xFF7C3AED),
+      fontWeight: FontWeight.w700,
+    );
   }
   if (token.startsWith('"') ||
       token.startsWith("'") ||

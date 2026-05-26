@@ -77,6 +77,13 @@ class LiveSshSession {
   })  : id = const Uuid().v4(),
         _commandQueue = commandQueue;
 
+  LiveSshSession.testing({
+    required this.client,
+    required this.connection,
+    String? id,
+  })  : id = id ?? const Uuid().v4(),
+        _commandQueue = _SshCommandQueue();
+
   final String id;
   final SSHClient client;
   final SavedConnection connection;

@@ -50,6 +50,7 @@ class AppState extends ChangeNotifier {
   final Map<Object, Timer> _tmuxAttentionRefreshTimers = {};
   final Map<int, int> _terminalAttentionNotificationSerials = {};
   final Map<int, String> _terminalAttentionNotificationBodies = {};
+  final Set<Object> _disconnectedClients = <Object>{};
   final Map<String, _CachedDirectory> _directoryCache = {};
   final Map<String, List<String>> _directoryBackStacks = {};
   final Map<String, String> _reconnectSecrets = {};
@@ -927,6 +928,7 @@ class AppState extends ChangeNotifier {
     final closeClient = !_hasOtherSessionsOnClient(session);
     if (closeClient) {
       _cancelTmuxAttentionObserver(session.client);
+      _disconnectedClients.remove(session.client);
     }
     session.close(closeClient: closeClient);
     if (!_hasOtherSessionsForConnection(session.connection)) {
@@ -965,8 +967,10 @@ class AppState extends ChangeNotifier {
       return;
     }
 
-    final allClosedSessions =
-        liveSessions.where((session) => session.isClosed).toList();
+    final allClosedSessions = liveSessions
+        .where((session) =>
+            session.isClosed || _disconnectedClients.contains(session.client))
+        .toList();
     final closedSessions = allClosedSessions
         .where((session) => reconnectPolicy.canAttempt(
               session.connection.fingerprint,
@@ -1034,6 +1038,9 @@ class AppState extends ChangeNotifier {
               List<String>.from(oldBackStack);
         }
       }
+      for (final oldSession in closedSessions) {
+        _disconnectedClients.remove(oldSession.client);
+      }
 
       liveSessions = [
         for (final session in liveSessions) replacements[session.id] ?? session,
@@ -1091,6 +1098,32 @@ class AppState extends ChangeNotifier {
       reconnecting = false;
       notifyListeners();
     }
+  }
+
+  void markSessionDisconnected(LiveSshSession session) {
+    unawaited(reconnectSessionClient(session));
+  }
+
+  Future<void> reconnectActiveWorkspace() async {
+    final session = activeSession;
+    if (session == null) {
+      return;
+    }
+    await reconnectSessionClient(session, force: true);
+  }
+
+  Future<void> reconnectSessionClient(
+    LiveSshSession session, {
+    bool force = false,
+  }) async {
+    if (!liveSessions.any((item) => item.id == session.id)) {
+      return;
+    }
+    _disconnectedClients.add(session.client);
+    _cancelTmuxAttentionObserver(session.client);
+    session.close();
+    notifyListeners();
+    await reconnectClosedSessions(force: force);
   }
 
   Future<void> createTerminalSessionFromActive({
@@ -2030,6 +2063,7 @@ class AppState extends ChangeNotifier {
     _terminalFrames.clear();
     _directoryCache.clear();
     _reconnectSecrets.clear();
+    _disconnectedClients.clear();
     reconnectPolicy.clearAll();
     final closedClients = <Object>[];
     for (final session in sessions) {

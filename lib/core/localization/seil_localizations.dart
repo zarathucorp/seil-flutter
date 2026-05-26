@@ -675,10 +675,10 @@ class SeilLocalizations {
       );
 
   String get refreshSession => _t(
-        en: 'Refresh session',
-        ko: '세션 새로고침',
-        ja: 'セッションを更新',
-        zh: '刷新会话',
+        en: 'Reconnect server',
+        ko: '서버 재연결',
+        ja: 'サーバーに再接続',
+        zh: '重新连接服务器',
       );
 
   String get disconnectCurrentConnection => _t(
