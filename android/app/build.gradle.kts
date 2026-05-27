@@ -56,6 +56,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+        }
+
         release {
             // Play uploads must fail before a debug-signed artifact is produced.
             if (hasReleaseSigningProperties) {
