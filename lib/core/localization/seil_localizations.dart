@@ -76,6 +76,34 @@ class SeilLocalizations {
         zh: 'SSH secret 存储在 Android Keystore 或 iOS Keychain 中。',
       );
 
+  String get trustHostKeyTitle => _t(
+        en: 'Trust this server?',
+        ko: '이 서버를 신뢰할까요?',
+        ja: 'このサーバーを信頼しますか？',
+        zh: '信任此服务器？',
+      );
+
+  String trustHostKeyMessage(String host, int port) => _t(
+        en: 'Seil has not seen the SSH host key for $host:$port before. Trust this fingerprint only if it matches your server.',
+        ko: 'Seil이 $host:$port의 SSH 호스트 키를 처음 확인했습니다. 서버의 fingerprint와 일치할 때만 신뢰하세요.',
+        ja: 'Seil は $host:$port の SSH ホストキーをまだ確認していません。サーバーの fingerprint と一致する場合のみ信頼してください。',
+        zh: 'Seil 首次看到 $host:$port 的 SSH 主机密钥。仅在 fingerprint 与你的服务器一致时信任。',
+      );
+
+  String hostKeyType(String keyType) => _t(
+        en: 'Key type: $keyType',
+        ko: '키 타입: $keyType',
+        ja: 'キータイプ: $keyType',
+        zh: '密钥类型：$keyType',
+      );
+
+  String get trustAndConnect => _t(
+        en: 'Trust and connect',
+        ko: '신뢰하고 연결',
+        ja: '信頼して接続',
+        zh: '信任并连接',
+      );
+
   String get appLoginPassword => _t(
         en: 'App login password',
         ko: '앱 로그인 비밀번호',
@@ -1545,6 +1573,16 @@ String seilConnectionFailureMessage(String languageCode, Object error) {
       ko: '연결 실패: 인증 실패 (비밀번호 또는 개인 키를 확인해 주세요)',
       ja: '接続に失敗しました: 認証に失敗しました。パスワードまたは秘密鍵を確認してください。',
       zh: '连接失败：认证失败。请检查密码或私钥。',
+    );
+  }
+  if (lower.contains('hostkey verification failed') ||
+      lower.contains('host key verification failed')) {
+    return _localizedByCode(
+      languageCode,
+      en: 'Connection failed: SSH host key was not trusted or has changed.',
+      ko: '연결 실패: SSH 호스트 키를 신뢰하지 않았거나 키가 변경되었습니다.',
+      ja: '接続に失敗しました: SSH ホストキーが信頼されていないか、変更されています。',
+      zh: '连接失败：SSH 主机密钥未被信任或已更改。',
     );
   }
   if (lower.contains('connection refused')) {

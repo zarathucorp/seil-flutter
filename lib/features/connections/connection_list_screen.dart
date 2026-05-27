@@ -151,7 +151,11 @@ class ConnectionListScreen extends StatelessWidget {
         return;
       }
     }
-    await state.connectSaved(connection, transientSecret: secret);
+    await state.connectSaved(
+      connection,
+      transientSecret: secret,
+      confirmHostKey: (request) => _confirmHostKey(context, request),
+    );
   }
 
   Future<String?> _askSecret(BuildContext context, AuthMode authMode) {
@@ -555,6 +559,7 @@ class _ConnectionFormState extends State<_ConnectionForm> {
         saveSecret: saveSecret,
       ),
       initialPaneIndex: 0,
+      confirmHostKey: (request) => _confirmHostKey(context, request),
     );
     if (!mounted) {
       return;
@@ -606,6 +611,54 @@ class _ConnectionFormState extends State<_ConnectionForm> {
     }
     setState(() => formError = null);
   }
+}
+
+Future<bool> _confirmHostKey(
+  BuildContext context,
+  HostKeyVerificationRequest request,
+) async {
+  if (!context.mounted) {
+    return false;
+  }
+  final l10n = context.l10n;
+  final accepted = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(l10n.trustHostKeyTitle),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(l10n.trustHostKeyMessage(request.host, request.port)),
+            const SizedBox(height: 12),
+            Text(
+              l10n.hostKeyType(request.keyType),
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 4),
+            SelectableText(
+              request.fingerprint,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    fontFamily: 'FiraCodeNerdFontMono',
+                  ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: Text(l10n.cancel),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, true),
+          child: Text(l10n.trustAndConnect),
+        ),
+      ],
+    ),
+  );
+  return accepted == true;
 }
 
 class _ValidatedConnectionInput {

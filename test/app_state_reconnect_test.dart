@@ -175,6 +175,7 @@ class _FakeSshSessionService implements SshSessionService {
   Future<LiveSshSession> connect({
     required SavedConnection connection,
     required String secret,
+    HostKeyVerifier? verifyHostKey,
   }) async {
     connectCount += 1;
     return replacement;

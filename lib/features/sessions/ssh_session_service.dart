@@ -26,7 +26,26 @@ abstract class SshSessionService {
   Future<LiveSshSession> connect({
     required SavedConnection connection,
     required String secret,
+    HostKeyVerifier? verifyHostKey,
   });
+}
+
+typedef HostKeyVerifier = Future<bool> Function(
+  HostKeyVerificationRequest request,
+);
+
+class HostKeyVerificationRequest {
+  const HostKeyVerificationRequest({
+    required this.host,
+    required this.port,
+    required this.keyType,
+    required this.fingerprint,
+  });
+
+  final String host;
+  final int port;
+  final String keyType;
+  final String fingerprint;
 }
 
 class DartSshSessionService implements SshSessionService {
@@ -34,6 +53,7 @@ class DartSshSessionService implements SshSessionService {
   Future<LiveSshSession> connect({
     required SavedConnection connection,
     required String secret,
+    HostKeyVerifier? verifyHostKey,
   }) async {
     if (connection.authMode == AuthMode.agent) {
       throw StateError(SeilErrorCodes.sshAgentUnsupported);
@@ -48,6 +68,20 @@ class DartSshSessionService implements SshSessionService {
       socket,
       username: connection.username,
       keepAliveInterval: const Duration(seconds: 10),
+      onVerifyHostKey: (type, fingerprint) {
+        final verifier = verifyHostKey;
+        if (verifier == null) {
+          return false;
+        }
+        return verifier(
+          HostKeyVerificationRequest(
+            host: connection.host,
+            port: connection.port,
+            keyType: type,
+            fingerprint: formatSshMd5Fingerprint(fingerprint),
+          ),
+        );
+      },
       onPasswordRequest:
           connection.authMode == AuthMode.password ? () => secret : null,
       identities: connection.authMode == AuthMode.privateKey
@@ -67,6 +101,13 @@ class DartSshSessionService implements SshSessionService {
     }
     return session;
   }
+}
+
+String formatSshMd5Fingerprint(Uint8List fingerprint) {
+  final hex = fingerprint
+      .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
+      .join(':');
+  return 'MD5:$hex';
 }
 
 class LiveSshSession {

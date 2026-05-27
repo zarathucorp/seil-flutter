@@ -432,8 +432,11 @@ class AppState extends ChangeNotifier {
     });
   }
 
-  Future<void> connectNew(SshConnectionInput input,
-      {int initialPaneIndex = 0}) async {
+  Future<void> connectNew(
+    SshConnectionInput input, {
+    int initialPaneIndex = 0,
+    HostKeyVerifier? confirmHostKey,
+  }) async {
     final fingerprint = connectionRepository.createConnectionFingerprint(input);
     final existed = connections.any(
       (connection) => connection.fingerprint == fingerprint,
@@ -446,6 +449,7 @@ class AppState extends ChangeNotifier {
           connection,
           transientSecret: input.secret,
           initialPaneIndex: initialPaneIndex,
+          confirmHostKey: confirmHostKey,
         );
       } catch (error) {
         if (!existed) {
@@ -460,7 +464,8 @@ class AppState extends ChangeNotifier {
   Future<void> connectSaved(SavedConnection connection,
       {String? transientSecret,
       int initialPaneIndex = 0,
-      bool reuseExisting = true}) async {
+      bool reuseExisting = true,
+      HostKeyVerifier? confirmHostKey}) async {
     connectingConnectionId = connection.id;
     notifyListeners();
     try {
@@ -469,7 +474,8 @@ class AppState extends ChangeNotifier {
           await _connect(connection,
               transientSecret: transientSecret,
               initialPaneIndex: initialPaneIndex,
-              reuseExisting: reuseExisting);
+              reuseExisting: reuseExisting,
+              confirmHostKey: confirmHostKey);
         } catch (error) {
           throw StateError(
               seilConnectionFailureMessage(appLanguageCode, error));
@@ -486,7 +492,8 @@ class AppState extends ChangeNotifier {
   Future<void> _connect(SavedConnection connection,
       {String? transientSecret,
       int initialPaneIndex = 0,
-      bool reuseExisting = true}) async {
+      bool reuseExisting = true,
+      HostKeyVerifier? confirmHostKey}) async {
     final existing = _findOpenSessionForConnection(connection);
     if (existing != null) {
       if (!reuseExisting) {
@@ -515,7 +522,13 @@ class AppState extends ChangeNotifier {
       throw StateError(SeilErrorCodes.missingSshSecret);
     }
     final session = await sshSessionService.connect(
-        connection: connection, secret: secret ?? '');
+      connection: connection,
+      secret: secret ?? '',
+      verifyHostKey: (request) => _verifyHostKey(
+        request,
+        confirmHostKey: confirmHostKey,
+      ),
+    );
     final directory = await session.listDirectory(session.homePath);
     if (secret != null && secret.isNotEmpty) {
       _reconnectSecrets[connection.fingerprint] = secret;
@@ -529,6 +542,42 @@ class AppState extends ChangeNotifier {
     activeDirectory = directory;
     _ensureTmuxAttentionObserver(session);
     unawaited(_applyPendingTerminalNotificationTarget());
+  }
+
+  Future<bool> _verifyHostKey(
+    HostKeyVerificationRequest request, {
+    HostKeyVerifier? confirmHostKey,
+  }) async {
+    final trusted = await hostKeyRepository.isTrusted(
+      host: request.host,
+      port: request.port,
+      fingerprintSha256: request.fingerprint,
+    );
+    if (trusted) {
+      trustedHostKeys = await hostKeyRepository.listTrustedHostKeys();
+      return true;
+    }
+
+    final existingKeys = await hostKeyRepository.listTrustedHostKeysForHost(
+      host: request.host,
+      port: request.port,
+    );
+    if (existingKeys.isNotEmpty) {
+      return false;
+    }
+
+    final accepted = await confirmHostKey?.call(request) ?? false;
+    if (!accepted) {
+      return false;
+    }
+    await hostKeyRepository.trustHostKey(
+      host: request.host,
+      port: request.port,
+      keyType: request.keyType,
+      fingerprintSha256: request.fingerprint,
+    );
+    trustedHostKeys = await hostKeyRepository.listTrustedHostKeys();
+    return true;
   }
 
   void selectSession(LiveSshSession session) {
@@ -2006,6 +2055,7 @@ class AppState extends ChangeNotifier {
     final session = await sshSessionService.connect(
       connection: oldSession.connection,
       secret: secret ?? '',
+      verifyHostKey: _verifyHostKey,
     );
     if (secret != null && secret.isNotEmpty) {
       _reconnectSecrets[oldSession.connection.fingerprint] = secret;

@@ -10,11 +10,27 @@ class HostKeyRepository {
 
   final LocalDatabase database;
   final _uuid = const Uuid();
+  static final _fingerprintPattern = RegExp(
+    r'^(SHA256:[A-Za-z0-9+/=]+|MD5:([0-9a-f]{2}:){15}[0-9a-f]{2})$',
+  );
 
   Future<List<TrustedHostKey>> listTrustedHostKeys() async {
     final rows = await database.db.query(
       'trusted_host_keys',
       orderBy: 'host ASC, port ASC, updated_at DESC',
+    );
+    return rows.map(_mapHostKey).toList();
+  }
+
+  Future<List<TrustedHostKey>> listTrustedHostKeysForHost({
+    required String host,
+    required int port,
+  }) async {
+    final rows = await database.db.query(
+      'trusted_host_keys',
+      where: 'host = ? AND port = ?',
+      whereArgs: [host.trim().toLowerCase(), port],
+      orderBy: 'updated_at DESC',
     );
     return rows.map(_mapHostKey).toList();
   }
@@ -26,11 +42,12 @@ class HostKeyRepository {
     required String fingerprintSha256,
   }) async {
     final normalizedHost = host.trim().toLowerCase();
+    final normalizedFingerprint =
+        _normalizeHostKeyFingerprint(fingerprintSha256);
     if (normalizedHost.isEmpty || port <= 0 || port > 65535) {
       throw ArgumentError(SeilErrorCodes.hostKeyInvalid);
     }
-    if (!RegExp(r'^SHA256:[A-Za-z0-9+/]+$')
-        .hasMatch(fingerprintSha256.trim())) {
+    if (!_fingerprintPattern.hasMatch(normalizedFingerprint)) {
       throw ArgumentError(SeilErrorCodes.hostKeyFingerprintInvalid);
     }
 
@@ -38,7 +55,7 @@ class HostKeyRepository {
     final rows = await database.db.query(
       'trusted_host_keys',
       where: 'host = ? AND port = ? AND fingerprint_sha256 = ?',
-      whereArgs: [normalizedHost, port, fingerprintSha256.trim()],
+      whereArgs: [normalizedHost, port, normalizedFingerprint],
       limit: 1,
     );
     final id = rows.isEmpty ? _uuid.v4() : rows.first['id'] as String;
@@ -49,7 +66,7 @@ class HostKeyRepository {
         'host': normalizedHost,
         'port': port,
         'key_type': keyType.trim().isEmpty ? 'unknown' : keyType.trim(),
-        'fingerprint_sha256': fingerprintSha256.trim(),
+        'fingerprint_sha256': normalizedFingerprint,
         'created_at': rows.isEmpty ? now : rows.first['created_at'] as String,
         'updated_at': now,
         'last_verified_at':
@@ -79,10 +96,12 @@ class HostKeyRepository {
     required int port,
     required String fingerprintSha256,
   }) async {
+    final normalizedFingerprint =
+        _normalizeHostKeyFingerprint(fingerprintSha256);
     final rows = await database.db.query(
       'trusted_host_keys',
       where: 'host = ? AND port = ? AND fingerprint_sha256 = ?',
-      whereArgs: [host.trim().toLowerCase(), port, fingerprintSha256.trim()],
+      whereArgs: [host.trim().toLowerCase(), port, normalizedFingerprint],
       limit: 1,
     );
     if (rows.isEmpty) {
@@ -95,6 +114,14 @@ class HostKeyRepository {
       whereArgs: [rows.first['id']],
     );
     return true;
+  }
+
+  String _normalizeHostKeyFingerprint(String value) {
+    final trimmed = value.trim();
+    if (trimmed.toUpperCase().startsWith('MD5:')) {
+      return 'MD5:${trimmed.substring(4).toLowerCase()}';
+    }
+    return trimmed;
   }
 
   TrustedHostKey _mapHostKey(Map<String, Object?> row) {
