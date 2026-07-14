@@ -17,6 +17,8 @@ class AppSettingsRepository {
       'terminal_attention_notifications_enabled';
   static const _terminalAttentionNotificationTailEnabled =
       'terminal_attention_notification_tail_enabled';
+  static const _tmuxSessionOrders = 'tmux_session_orders_v1';
+  static const _tmuxTabNames = 'tmux_tab_names_v1';
   static const keyboardMacroCount = 9;
   static const systemLanguageCode = 'system';
   static const supportedLanguageCodes = [
@@ -195,6 +197,150 @@ class AppSettingsRepository {
       'app_settings',
       {
         'key': _keyboardMacros,
+        'value': jsonEncode(normalized),
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<Map<String, List<String>>> loadTmuxSessionOrders() async {
+    final rows = await database.db.query(
+      'app_settings',
+      columns: ['value'],
+      where: 'key = ?',
+      whereArgs: [_tmuxSessionOrders],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      return {};
+    }
+    try {
+      final decoded = jsonDecode(rows.first['value'] as String);
+      if (decoded is! Map) {
+        return {};
+      }
+      final orders = <String, List<String>>{};
+      for (final entry in decoded.entries) {
+        final serverKey = entry.key.toString().trim();
+        final value = entry.value;
+        if (serverKey.isEmpty || value is! List) {
+          continue;
+        }
+        final names = <String>[];
+        for (final item in value) {
+          final name = item.toString().trim();
+          if (name.isNotEmpty && !names.contains(name)) {
+            names.add(name);
+          }
+        }
+        if (names.isNotEmpty) {
+          orders[serverKey] = names;
+        }
+      }
+      return orders;
+    } catch (_) {
+      return {};
+    }
+  }
+
+  Future<void> saveTmuxSessionOrders(
+    Map<String, List<String>> orders,
+  ) {
+    final normalized = <String, List<String>>{};
+    for (final entry in orders.entries) {
+      final serverKey = entry.key.trim();
+      if (serverKey.isEmpty) {
+        continue;
+      }
+      final names = <String>[];
+      for (final item in entry.value) {
+        final name = item.trim();
+        if (name.isNotEmpty && !names.contains(name)) {
+          names.add(name);
+        }
+      }
+      if (names.isNotEmpty) {
+        normalized[serverKey] = names;
+      }
+    }
+    return database.db.insert(
+      'app_settings',
+      {
+        'key': _tmuxSessionOrders,
+        'value': jsonEncode(normalized),
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<Map<String, Map<String, String>>> loadTmuxTabNames() async {
+    final rows = await database.db.query(
+      'app_settings',
+      columns: ['value'],
+      where: 'key = ?',
+      whereArgs: [_tmuxTabNames],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      return {};
+    }
+    try {
+      final decoded = jsonDecode(rows.first['value'] as String);
+      if (decoded is! Map) {
+        return {};
+      }
+      final names = <String, Map<String, String>>{};
+      for (final serverEntry in decoded.entries) {
+        final serverKey = serverEntry.key.toString().trim();
+        final value = serverEntry.value;
+        if (serverKey.isEmpty || value is! Map) {
+          continue;
+        }
+        final serverNames = <String, String>{};
+        for (final tabEntry in value.entries) {
+          final tmuxName = tabEntry.key.toString().trim();
+          final label = tabEntry.value.toString().trim();
+          if (tmuxName.isNotEmpty && label.isNotEmpty) {
+            serverNames[tmuxName] = label;
+          }
+        }
+        if (serverNames.isNotEmpty) {
+          names[serverKey] = serverNames;
+        }
+      }
+      return names;
+    } catch (_) {
+      return {};
+    }
+  }
+
+  Future<void> saveTmuxTabNames(
+    Map<String, Map<String, String>> names,
+  ) {
+    final normalized = <String, Map<String, String>>{};
+    for (final serverEntry in names.entries) {
+      final serverKey = serverEntry.key.trim();
+      if (serverKey.isEmpty) {
+        continue;
+      }
+      final serverNames = <String, String>{};
+      for (final tabEntry in serverEntry.value.entries) {
+        final tmuxName = tabEntry.key.trim();
+        final label = tabEntry.value.trim();
+        if (tmuxName.isNotEmpty && label.isNotEmpty) {
+          serverNames[tmuxName] = label;
+        }
+      }
+      if (serverNames.isNotEmpty) {
+        normalized[serverKey] = serverNames;
+      }
+    }
+    return database.db.insert(
+      'app_settings',
+      {
+        'key': _tmuxTabNames,
         'value': jsonEncode(normalized),
         'updated_at': DateTime.now().toUtc().toIso8601String(),
       },

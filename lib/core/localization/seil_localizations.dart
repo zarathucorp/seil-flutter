@@ -674,6 +674,20 @@ class SeilLocalizations {
         zh: '标签名称',
       );
 
+  String get renameTab => _t(
+        en: 'Rename tab',
+        ko: '탭 이름 변경',
+        ja: 'タブ名を変更',
+        zh: '重命名标签页',
+      );
+
+  String get tabName => _t(
+        en: 'Tab name',
+        ko: '탭 이름',
+        ja: 'タブ名',
+        zh: '标签页名称',
+      );
+
   String get refreshSession => _t(
         en: 'Reconnect server',
         ko: '서버 재연결',

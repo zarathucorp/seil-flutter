@@ -1,0 +1,68 @@
+name: Android debug build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-debug-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Install Flutter 3.44.6
+        run: |
+          git clone --depth 1 --branch 3.44.6 https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Configure Flutter
+        run: |
+          flutter config --no-analytics
+          flutter precache --android
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Check formatting
+        run: >
+          dart format --output=none --set-exit-if-changed
+          lib/core/localization/seil_localizations.dart
+          lib/core/settings/app_settings_repository.dart
+          lib/features/sessions/workspace_screen.dart
+          lib/shared/app_state.dart
+          test/tmux_session_order_test.dart
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+      - name: Build debug APK
+        run: flutter build apk --debug
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: seil-debug-apk
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
