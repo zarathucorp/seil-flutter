@@ -5,6 +5,7 @@ import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -30,6 +31,7 @@ const _glassStroke = Color(0xB8FFFFFF);
 const _sheetFill = Color(0xF4F8FAFC);
 const _terminalSelection = Color(0x666BA6FF);
 const _terminalSelectionHandle = Color(0xFF73D0FF);
+const _tmuxTabReorderDelay = Duration(milliseconds: 500);
 const _terminalFontFamily = 'FiraCodeNerdFontMono';
 const _terminalFontSize = 6.0;
 const _terminalMinFontSize = 4.0;
@@ -38,6 +40,7 @@ const _terminalForeground = Color(0xFFE5E7EB);
 const _terminalMutedForeground = Color(0xFFA1A1AA);
 const _terminalBottomPaddingLines = '\n\n\n\n';
 const _terminalAutoScrollBottomTolerance = 24.0;
+const tmuxBackgroundRefreshInterval = Duration(seconds: 2);
 
 class _WorkspacePerformance extends InheritedWidget {
   const _WorkspacePerformance({
@@ -941,14 +944,13 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
   String? activeServerKey;
   Timer? refreshTimer;
 
+  bool refreshing = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _refreshTmuxList());
-    refreshTimer = Timer.periodic(
-      const Duration(seconds: 2),
-      (_) => _refreshTmuxList(),
-    );
+    _startRefreshTimer();
   }
 
   @override
@@ -1009,7 +1011,7 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
                 width: tabsWidth,
                 child: ReorderableListView.builder(
                   scrollDirection: Axis.horizontal,
-                  buildDefaultDragHandles: true,
+                  buildDefaultDragHandles: false,
                   itemCount: sessions.length,
                   onReorderItem: (oldIndex, newIndex) => unawaited(
                     widget.state.reorderTmuxSessions(
@@ -1039,26 +1041,38 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
                     return Padding(
                       key: ValueKey(session.name),
                       padding: const EdgeInsets.only(right: 5),
-                      child: _SessionNumberButton(
-                        label: customName ??
-                            labelsByName[session.name] ??
-                            '${index + 1}',
-                        width: tabWidthsByName[session.name] ?? 32,
-                        selected: selected,
-                        attentionState: session.attentionState,
-                        onPressed: () async {
-                          if (selected) {
-                            await _showTmuxTabNameDialog(
+                      child: _TmuxTabReorderDragStartListener(
+                        index: index,
+                        child: _SessionNumberButton(
+                          label: customName ??
+                              labelsByName[session.name] ??
+                              '${index + 1}',
+                          width: tabWidthsByName[session.name] ?? 32,
+                          selected: selected,
+                          attentionState: session.attentionState,
+                          onRename: () => unawaited(
+                            _showTmuxTabNameDialog(
                               context,
                               widget.state,
                               active,
                               session.name,
-                            );
-                            return;
-                          }
-                          widget.state.acknowledgeCompletedTmuxSession(session);
-                          await widget.state.selectTmuxSession(session);
-                        },
+                            ),
+                          ),
+                          onPressed: () async {
+                            widget.state
+                                .acknowledgeCompletedTmuxSession(session);
+                            if (selected) {
+                              await _showTmuxTabNameDialog(
+                                context,
+                                widget.state,
+                                active,
+                                session.name,
+                              );
+                              return;
+                            }
+                            await widget.state.selectTmuxSession(session);
+                          },
+                        ),
                       ),
                     );
                   },
@@ -1082,15 +1096,29 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
     );
   }
 
+  void _startRefreshTimer() {
+    refreshTimer?.cancel();
+    refreshTimer = Timer.periodic(
+      tmuxBackgroundRefreshInterval,
+      (_) => _refreshTmuxList(),
+    );
+  }
+
   void _refreshTmuxList() {
-    if (!mounted) {
+    if (!mounted || refreshing) {
       return;
     }
     final active = widget.state.activeSession;
     activeServerKey = _serverKey(active);
-    if (active?.tmuxAvailable == true) {
-      unawaited(widget.state.refreshActiveTmuxSessions(silent: true));
+    if (active?.tmuxAvailable != true) {
+      return;
     }
+    refreshing = true;
+    unawaited(
+      widget.state.refreshActiveTmuxSessions(silent: true).whenComplete(() {
+        refreshing = false;
+      }),
+    );
   }
 
   String? _serverKey(LiveSshSession? session) {
@@ -1187,12 +1215,28 @@ class _SessionAddButtonState extends State<_SessionAddButton> {
   }
 }
 
+class _TmuxTabReorderDragStartListener extends ReorderableDragStartListener {
+  const _TmuxTabReorderDragStartListener({
+    required super.index,
+    required super.child,
+  });
+
+  @override
+  MultiDragGestureRecognizer createRecognizer() {
+    return DelayedMultiDragGestureRecognizer(
+      delay: _tmuxTabReorderDelay,
+      debugOwner: this,
+    );
+  }
+}
+
 class _SessionNumberButton extends StatefulWidget {
   const _SessionNumberButton({
     required this.label,
     required this.width,
     required this.selected,
     required this.attentionState,
+    required this.onRename,
     required this.onPressed,
   });
 
@@ -1200,6 +1244,7 @@ class _SessionNumberButton extends StatefulWidget {
   final double width;
   final bool selected;
   final TerminalAttentionState attentionState;
+  final VoidCallback onRename;
   final VoidCallback onPressed;
 
   @override
@@ -1241,6 +1286,7 @@ class _SessionNumberButtonState extends State<_SessionNumberButton>
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: widget.onPressed,
+      onDoubleTap: widget.onRename,
       onTapDown: (_) => _setPressed(true),
       onTapUp: (_) => _setPressed(false),
       onTapCancel: () => _setPressed(false),
@@ -1576,7 +1622,7 @@ class _TmuxSessionChooserState extends State<_TmuxSessionChooser> {
 
   Duration get refreshInterval => widget.state.lowEndModeEnabled
       ? const Duration(seconds: 4)
-      : const Duration(seconds: 2);
+      : tmuxBackgroundRefreshInterval;
 
   @override
   void initState() {
