@@ -9,5 +9,6 @@ Use these files for the Google Play Console store listing.
   - `phone-screenshots/02-sftp-file-browser.jpeg`
   - `phone-screenshots/03-terminal-tmux-session.jpeg`
   - `phone-screenshots/04-keyboard-macros.jpeg`
+- Release notes: `release-notes/<version>.txt`
 
 Generated source files and temporary drafts are not required for Play Console upload.

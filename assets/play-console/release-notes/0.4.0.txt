@@ -1,0 +1,15 @@
+<en-US>
+Reorder tmux tabs with drag and drop and assign custom names to them. Terminal responsiveness for keyboard and mouse input has been improved, while background tmux status refresh overhead has been reduced.
+</en-US>
+
+<ko-KR>
+tmux 탭을 드래그하여 원하는 순서로 변경하고 사용자 지정 이름을 설정할 수 있습니다. 키보드 및 마우스 입력에 대한 터미널 반응성을 개선하고 백그라운드 tmux 상태 갱신 부하를 줄였습니다.
+</ko-KR>
+
+<ja-JP>
+tmux タブをドラッグして並べ替え、カスタム名を設定できるようになりました。キーボードとマウス入力に対するターミナルの応答性を改善し、バックグラウンドでの tmux 状態更新の負荷を軽減しました。
+</ja-JP>
+
+<zh-CN>
+现在可以拖动 tmux 标签页调整顺序并设置自定义名称。提升了终端对键盘和鼠标输入的响应速度，同时降低了后台刷新 tmux 状态的开销。
+</zh-CN>

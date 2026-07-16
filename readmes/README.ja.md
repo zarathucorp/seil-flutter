@@ -63,7 +63,7 @@ test/       Flutter テスト
 
 ビルド前に通常の Flutter 開発環境を用意してください。
 
-- Flutter SDK、Dart 同梱
+- Flutter SDK 3.44.6 以降、Dart 同梱
 - Android Studio
 - Android SDK Platform Tools
 - Android SDK Command-line Tools
