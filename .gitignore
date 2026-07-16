@@ -85,3 +85,10 @@ upload-keystore.*
 .env.*
 google-services.json
 GoogleService-Info.plist
+.Rproj.user
+
+# Local test builds and workspace keys
+*.apk
+*.Rproj
+/ShinyApps
+/ShinyApps.pub

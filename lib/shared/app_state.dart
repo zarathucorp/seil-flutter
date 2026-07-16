@@ -44,6 +44,8 @@ class AppState extends ChangeNotifier {
   final Map<String, int> sessionPaneIndexes = {};
   final Map<String, String> _sessionNames = {};
   final Map<String, SessionTag> _tmuxTags = {};
+  Map<String, List<String>> _tmuxSessionOrders = {};
+  Map<String, Map<String, String>> _tmuxTabNames = {};
   final Map<String, TmuxCaptureFrame> _terminalFrames = {};
   final Map<Object, StreamSubscription<TmuxAttentionSignal>>
       _tmuxAttentionSubscriptions = {};
@@ -117,6 +119,8 @@ class AppState extends ChangeNotifier {
         await settingsRepository.isTerminalAttentionNotificationTailEnabled();
     appLanguageCode = await settingsRepository.loadAppLanguageCode();
     keyboardMacros = await settingsRepository.loadKeyboardMacros();
+    _tmuxSessionOrders = await settingsRepository.loadTmuxSessionOrders();
+    _tmuxTabNames = await settingsRepository.loadTmuxTabNames();
     needsBootstrap = !(await authRepository.hasUsers());
     if (!needsBootstrap) {
       connections = await connectionRepository.listConnections();
@@ -613,6 +617,120 @@ class AppState extends ChangeNotifier {
     );
   }
 
+  List<RemoteTmuxSession> orderedTmuxSessions(
+    LiveSshSession session,
+    List<RemoteTmuxSession> sessions,
+  ) {
+    final savedOrder = _tmuxSessionOrders[session.connection.fingerprint];
+    if (savedOrder == null || savedOrder.isEmpty || sessions.length < 2) {
+      return List<RemoteTmuxSession>.from(sessions);
+    }
+    final byName = {
+      for (final tmuxSession in sessions) tmuxSession.name: tmuxSession,
+    };
+    final ordered = <RemoteTmuxSession>[];
+    for (final name in savedOrder) {
+      final tmuxSession = byName.remove(name);
+      if (tmuxSession != null) {
+        ordered.add(tmuxSession);
+      }
+    }
+    for (final tmuxSession in sessions) {
+      if (byName.remove(tmuxSession.name) != null) {
+        ordered.add(tmuxSession);
+      }
+    }
+    return ordered;
+  }
+
+  Future<void> reorderTmuxSessions(
+    LiveSshSession session,
+    List<RemoteTmuxSession> sessions,
+    int oldIndex,
+    int newIndex,
+  ) async {
+    if (oldIndex < 0 || oldIndex >= sessions.length) {
+      return;
+    }
+    if (newIndex < 0 || newIndex >= sessions.length || newIndex == oldIndex) {
+      return;
+    }
+    final serverKey = session.connection.fingerprint;
+    final previousOrders = {
+      for (final entry in _tmuxSessionOrders.entries)
+        entry.key: List<String>.from(entry.value),
+    };
+    final reordered = List<RemoteTmuxSession>.from(sessions);
+    final moved = reordered.removeAt(oldIndex);
+    reordered.insert(newIndex, moved);
+    _tmuxSessionOrders = {
+      ..._tmuxSessionOrders,
+      serverKey: [for (final tmuxSession in reordered) tmuxSession.name],
+    };
+    notifyListeners();
+    try {
+      await settingsRepository.saveTmuxSessionOrders(_tmuxSessionOrders);
+    } catch (error) {
+      _tmuxSessionOrders = previousOrders;
+      _setError(
+        seilLocalizedErrorMessage(appLanguageCode, error),
+        showPopup: false,
+      );
+      notifyListeners();
+    }
+  }
+
+  String? tmuxTabName(LiveSshSession session, String tmuxName) {
+    final name =
+        _tmuxTabNames[session.connection.fingerprint]?[tmuxName]?.trim();
+    return name == null || name.isEmpty ? null : name;
+  }
+
+  Future<void> setTmuxTabName(
+    LiveSshSession session,
+    String tmuxName,
+    String name,
+  ) async {
+    final trimmed = name.trim();
+    if ((tmuxTabName(session, tmuxName) ?? '') == trimmed) {
+      return;
+    }
+    final serverKey = session.connection.fingerprint;
+    final previousNames = {
+      for (final entry in _tmuxTabNames.entries)
+        entry.key: Map<String, String>.from(entry.value),
+    };
+    final serverNames = Map<String, String>.from(
+      _tmuxTabNames[serverKey] ?? const {},
+    );
+    if (trimmed.isEmpty) {
+      serverNames.remove(tmuxName);
+    } else {
+      serverNames[tmuxName] = trimmed;
+    }
+    final nextNames = {
+      for (final entry in _tmuxTabNames.entries)
+        entry.key: Map<String, String>.from(entry.value),
+    };
+    if (serverNames.isEmpty) {
+      nextNames.remove(serverKey);
+    } else {
+      nextNames[serverKey] = serverNames;
+    }
+    _tmuxTabNames = nextNames;
+    notifyListeners();
+    try {
+      await settingsRepository.saveTmuxTabNames(_tmuxTabNames);
+    } catch (error) {
+      _tmuxTabNames = previousNames;
+      _setError(
+        seilLocalizedErrorMessage(appLanguageCode, error),
+        showPopup: false,
+      );
+      notifyListeners();
+    }
+  }
+
   void renameSession(LiveSshSession session, String name) {
     final trimmed = name.trim();
     if (trimmed.isEmpty) {
@@ -861,6 +979,7 @@ class AppState extends ChangeNotifier {
       };
       final sessions = await session.killTmuxSession(trimmed);
       _tmuxTags.remove(_tmuxTagKey(session.connection, trimmed));
+      await setTmuxTabName(session, trimmed, '');
       if (sessions.isEmpty) {
         await _closeSessionsForClient(session);
         return;

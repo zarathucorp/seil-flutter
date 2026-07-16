@@ -22,6 +22,18 @@ const _sshConnectTimeout = Duration(seconds: 10);
 
 enum _TmuxListSection { sessions, windows, panes, tails }
 
+String buildTmuxSessionStatusCommand() {
+  return [
+    'tmux list-sessions -F "S$_tmuxDelimiter#{session_name}$_tmuxDelimiter#{session_windows}$_tmuxDelimiter#{session_attached}$_tmuxDelimiter#{session_created}$_tmuxDelimiter#{session_activity}" 2>/dev/null || true',
+    'printf "\\n$_tmuxWindowMarker\\n"',
+    'tmux list-windows -a -F "W$_tmuxDelimiter#{session_name}$_tmuxDelimiter#{window_flags}$_tmuxDelimiter#{window_activity_flag}$_tmuxDelimiter#{window_bell_flag}$_tmuxDelimiter#{window_activity}$_tmuxDelimiter#{window_name}" 2>/dev/null || true',
+    'printf "\\n$_tmuxPanePathMarker\\n"',
+    'tmux list-panes -a -F "P$_tmuxDelimiter#{session_name}$_tmuxDelimiter#{pane_active}$_tmuxDelimiter#{pane_current_path}$_tmuxDelimiter#{pane_current_command}$_tmuxDelimiter#{pane_id}$_tmuxDelimiter#{pane_title}" 2>/dev/null || true',
+    'printf "\\n$_tmuxPaneTailMarker\\n"',
+    'tmux list-panes -a -F "T$_tmuxDelimiter#{session_name}$_tmuxDelimiter#{pane_active}$_tmuxDelimiter#{pane_id}" 2>/dev/null | while IFS= read -r line; do session_name=\$(printf "%s" "\$line" | cut -d "|" -f 4); pane_active=\$(printf "%s" "\$line" | cut -d "|" -f 7); pane_id=\$(printf "%s" "\$line" | cut -d "|" -f 10); if [ "\$pane_active" = "1" ] && [ -n "\$pane_id" ]; then printf "T$_tmuxDelimiter%s$_tmuxDelimiter%s\\n" "\$session_name" "\$pane_id"; tmux capture-pane -t "\$pane_id" -p -S -10 2>/dev/null | sed "s/^/R$_tmuxDelimiter/"; printf "E$_tmuxDelimiter%s\\n" "\$session_name"; fi; done',
+  ].join('; ');
+}
+
 abstract class SshSessionService {
   Future<LiveSshSession> connect({
     required SavedConnection connection,
@@ -57,7 +69,7 @@ class DartSshSessionService implements SshSessionService {
     final session = LiveSshSession._(
       client: client,
       connection: connection,
-      commandQueue: _SshCommandQueue(),
+      commandQueue: SshCommandQueue(),
     );
     try {
       await session.initialize().timeout(_sshConnectTimeout);
@@ -73,7 +85,7 @@ class LiveSshSession {
   LiveSshSession._({
     required this.client,
     required this.connection,
-    required _SshCommandQueue commandQueue,
+    required SshCommandQueue commandQueue,
   })  : id = const Uuid().v4(),
         _commandQueue = commandQueue;
 
@@ -82,12 +94,12 @@ class LiveSshSession {
     required this.connection,
     String? id,
   })  : id = id ?? const Uuid().v4(),
-        _commandQueue = _SshCommandQueue();
+        _commandQueue = SshCommandQueue();
 
   final String id;
   final SSHClient client;
   final SavedConnection connection;
-  final _SshCommandQueue _commandQueue;
+  final SshCommandQueue _commandQueue;
   late final String hostName;
   late final String homePath;
   late final bool tmuxAvailable;
@@ -153,32 +165,44 @@ class LiveSshSession {
     tmuxSelectionReady = !tmuxAvailable;
   }
 
-  Future<String> runCommand(String command) async {
-    return _commandQueue.run(() async {
-      return _executeCommand(command);
-    });
+  Future<String> runCommand(
+    String command, {
+    SshCommandPriority priority = SshCommandPriority.foreground,
+    String? coalescingKey,
+  }) async {
+    return _commandQueue.run(
+      () => _executeCommand(command),
+      priority: priority,
+      coalescingKey: coalescingKey,
+    );
   }
 
   Future<String> runPersistentCommand(
     String command, {
     Duration timeout = const Duration(seconds: 2),
+    SshCommandPriority priority = SshCommandPriority.foreground,
+    String? coalescingKey,
   }) async {
-    return _commandQueue.run(() async {
-      if (client.isClosed) {
-        throw StateError(_sshClosedMessage);
-      }
-      try {
-        final shell = await _ensurePersistentShell();
-        return await shell.exec(command, timeout: timeout);
-      } catch (error) {
-        await _disposePersistentShell();
-        if (error is SSHStateError &&
-            (client.isClosed || _isClosedSshState(error))) {
+    return _commandQueue.run(
+      () async {
+        if (client.isClosed) {
           throw StateError(_sshClosedMessage);
         }
-        return _executeCommand(command);
-      }
-    });
+        try {
+          final shell = await _ensurePersistentShell();
+          return await shell.exec(command, timeout: timeout);
+        } catch (error) {
+          await _disposePersistentShell();
+          if (error is SSHStateError &&
+              (client.isClosed || _isClosedSshState(error))) {
+            throw StateError(_sshClosedMessage);
+          }
+          return _executeCommand(command);
+        }
+      },
+      priority: priority,
+      coalescingKey: coalescingKey,
+    );
   }
 
   Stream<TmuxAttentionSignal>? startTmuxControlModeObserver() {
@@ -406,7 +430,11 @@ class LiveSshSession {
       }
     }
     if (commands.isNotEmpty) {
-      await _runTmuxCommand(commands.join(' \\; '), refreshPane: false);
+      await _runTmuxCommand(
+        commands.join(' \\; '),
+        refreshPane: false,
+        priority: SshCommandPriority.interactive,
+      );
     }
   }
 
@@ -418,6 +446,7 @@ class LiveSshSession {
     await _runTmuxCommand(
       'send-keys -t ${_quoteShellToken(_tmuxTargetPane)} ${_quoteShellToken(key)}',
       refreshPane: false,
+      priority: SshCommandPriority.interactive,
     );
   }
 
@@ -440,7 +469,11 @@ class LiveSshSession {
     if (command == null) {
       return;
     }
-    await _runTmuxCommand(command, refreshPane: false);
+    await _runTmuxCommand(
+      command,
+      refreshPane: false,
+      priority: SshCommandPriority.interactive,
+    );
   }
 
   Future<void> changeTmuxDirectory(String path) async {
@@ -533,11 +566,12 @@ class LiveSshSession {
   Future<void> _runTmuxCommand(
     String arguments, {
     bool refreshPane = true,
+    SshCommandPriority priority = SshCommandPriority.foreground,
   }) async {
     if (!tmuxAvailable) {
       return;
     }
-    await runCommand('tmux $arguments');
+    await runCommand('tmux $arguments', priority: priority);
     if (refreshPane) {
       await refreshActiveTmuxPane();
     }
@@ -552,15 +586,9 @@ class LiveSshSession {
     }
 
     final output = await runCommand(
-      [
-        'tmux list-sessions -F "S$_tmuxDelimiter#{session_name}$_tmuxDelimiter#{session_windows}$_tmuxDelimiter#{session_attached}$_tmuxDelimiter#{session_created}$_tmuxDelimiter#{session_activity}" 2>/dev/null || true',
-        'printf "\\n$_tmuxWindowMarker\\n"',
-        'tmux list-windows -a -F "W$_tmuxDelimiter#{session_name}$_tmuxDelimiter#{window_flags}$_tmuxDelimiter#{window_activity_flag}$_tmuxDelimiter#{window_bell_flag}$_tmuxDelimiter#{window_activity}$_tmuxDelimiter#{window_name}" 2>/dev/null || true',
-        'printf "\\n$_tmuxPanePathMarker\\n"',
-        'tmux list-panes -a -F "P$_tmuxDelimiter#{session_name}$_tmuxDelimiter#{pane_active}$_tmuxDelimiter#{pane_current_path}$_tmuxDelimiter#{pane_current_command}$_tmuxDelimiter#{pane_title}" 2>/dev/null || true',
-        'printf "\\n$_tmuxPaneTailMarker\\n"',
-        'tmux list-panes -a -F "T$_tmuxDelimiter#{session_name}$_tmuxDelimiter#{pane_active}$_tmuxDelimiter#{pane_id}" 2>/dev/null | while IFS= read -r line; do session_name=\$(printf "%s" "\$line" | cut -d "|" -f 4); pane_active=\$(printf "%s" "\$line" | cut -d "|" -f 7); pane_id=\$(printf "%s" "\$line" | cut -d "|" -f 10); if [ "\$pane_active" = "1" ] && [ -n "\$pane_id" ]; then printf "T$_tmuxDelimiter%s$_tmuxDelimiter%s\\n" "\$session_name" "\$pane_id"; tmux capture-pane -t "\$pane_id" -p -S -30 2>/dev/null | sed "s/^/R$_tmuxDelimiter/"; printf "E$_tmuxDelimiter%s\\n" "\$session_name"; fi; done',
-      ].join('; '),
+      buildTmuxSessionStatusCommand(),
+      priority: SshCommandPriority.background,
+      coalescingKey: 'tmux-session-status',
     );
     final panePaths = <String, String>{};
     final paneTitles = <String, String>{};
@@ -605,6 +633,7 @@ class LiveSshSession {
             panePaths: panePaths,
             paneTitles: paneTitles,
             paneCommands: paneCommands,
+            activePaneBySession: activePaneBySession,
             attentionBySession: attentionBySession,
             terminalTitleBySession: terminalTitleBySession,
           );
@@ -633,8 +662,8 @@ class LiveSshSession {
       final tail = tailBySession[name];
       final screenAwareState = terminalAttentionFromTmux(
         terminalTitle: terminalTitle,
-        terminalScreen: tail,
         paneCurrentCommand: paneCommands[name],
+        terminalScreen: tail,
         windowFlags: windowFlagsBySession[name],
         allowTitleRunning: false,
       );
@@ -713,17 +742,22 @@ class LiveSshSession {
     required Map<String, String> paneTitles,
     required Map<String, String> paneCommands,
     required Map<String, TerminalAttentionState> attentionBySession,
+    required Map<String, String> activePaneBySession,
     required Map<String, String> terminalTitleBySession,
   }) {
     final parts = line.split(_tmuxDelimiter);
-    if (parts.length < 6 || parts.first != 'P') {
+    if (parts.length < 7 || parts.first != 'P') {
       return;
     }
     final sessionName = parts[1];
     final panePath = parts[3].trim();
     final paneCurrentCommand = parts[4].trim();
-    final paneTitle = parts.sublist(5).join(_tmuxDelimiter).trim();
+    final paneId = parts[5].trim();
+    final paneTitle = parts.sublist(6).join(_tmuxDelimiter).trim();
     final isActivePane = parts[2] == '1';
+    if (isActivePane && paneId.isNotEmpty) {
+      activePaneBySession[sessionName] = paneId;
+    }
     if (panePath.isNotEmpty &&
         (isActivePane || !panePaths.containsKey(sessionName))) {
       panePaths[sessionName] = panePath;
@@ -1239,23 +1273,101 @@ class TmuxAttentionSignal {
   final String? paneId;
 }
 
-class _SshCommandQueue {
-  Future<void> _tail = Future.value();
+enum SshCommandPriority {
+  interactive,
+  foreground,
+  background,
+}
 
-  Future<T> run<T>(Future<T> Function() action) {
-    final previous = _tail.catchError((Object _) {});
-    final completer = Completer<void>();
-    _tail = completer.future;
+class SshCommandQueue {
+  final List<_QueuedSshCommand<dynamic>> _pending = [];
+  final Map<String, _QueuedSshCommand<dynamic>> _coalesced = {};
+  bool _draining = false;
 
-    return previous.then((_) async {
-      try {
-        return await action();
-      } finally {
-        if (!completer.isCompleted) {
-          completer.complete();
+  Future<T> run<T>(
+    Future<T> Function() action, {
+    SshCommandPriority priority = SshCommandPriority.foreground,
+    String? coalescingKey,
+  }) {
+    if (coalescingKey != null) {
+      final existing = _coalesced[coalescingKey];
+      if (existing != null) {
+        return existing.future.then((value) => value as T);
+      }
+    }
+
+    final task = _QueuedSshCommand<T>(
+      action: action,
+      priority: priority,
+      coalescingKey: coalescingKey,
+    );
+    _pending.add(task);
+    if (coalescingKey != null) {
+      _coalesced[coalescingKey] = task;
+    }
+    _startDrain();
+    return task.typedFuture;
+  }
+
+  void _startDrain() {
+    if (_draining) {
+      return;
+    }
+    _draining = true;
+    unawaited(_drain());
+  }
+
+  Future<void> _drain() async {
+    try {
+      while (_pending.isNotEmpty) {
+        final task = _pending.removeAt(_nextTaskIndex());
+        await task.execute();
+        final key = task.coalescingKey;
+        if (key != null && identical(_coalesced[key], task)) {
+          _coalesced.remove(key);
         }
       }
-    });
+    } finally {
+      _draining = false;
+      if (_pending.isNotEmpty) {
+        _startDrain();
+      }
+    }
+  }
+
+  int _nextTaskIndex() {
+    var bestIndex = 0;
+    for (var index = 1; index < _pending.length; index += 1) {
+      if (_pending[index].priority.index < _pending[bestIndex].priority.index) {
+        bestIndex = index;
+      }
+    }
+    return bestIndex;
+  }
+}
+
+class _QueuedSshCommand<T> {
+  _QueuedSshCommand({
+    required this.action,
+    required this.priority,
+    required this.coalescingKey,
+  });
+
+  final Future<T> Function() action;
+  final SshCommandPriority priority;
+  final String? coalescingKey;
+  final Completer<T> _completer = Completer<T>();
+
+  Future<T> get typedFuture => _completer.future;
+
+  Future<dynamic> get future => typedFuture;
+
+  Future<void> execute() async {
+    try {
+      _completer.complete(await action());
+    } catch (error, stackTrace) {
+      _completer.completeError(error, stackTrace);
+    }
   }
 }
 

@@ -63,7 +63,7 @@ test/       Flutter 测试
 
 构建前请安装常规 Flutter 开发环境。
 
-- Flutter SDK，包含 Dart
+- Flutter SDK 3.44.6 或更高版本，包含 Dart
 - Android Studio
 - Android SDK Platform Tools
 - Android SDK Command-line Tools

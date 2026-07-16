@@ -5,6 +5,7 @@ import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -30,6 +31,7 @@ const _glassStroke = Color(0xB8FFFFFF);
 const _sheetFill = Color(0xF4F8FAFC);
 const _terminalSelection = Color(0x666BA6FF);
 const _terminalSelectionHandle = Color(0xFF73D0FF);
+const _tmuxTabReorderDelay = Duration(milliseconds: 500);
 const _terminalFontFamily = 'FiraCodeNerdFontMono';
 const _terminalFontSize = 6.0;
 const _terminalMinFontSize = 4.0;
@@ -38,6 +40,7 @@ const _terminalForeground = Color(0xFFE5E7EB);
 const _terminalMutedForeground = Color(0xFFA1A1AA);
 const _terminalBottomPaddingLines = '\n\n\n\n';
 const _terminalAutoScrollBottomTolerance = 24.0;
+const tmuxBackgroundRefreshInterval = Duration(seconds: 2);
 
 class _WorkspacePerformance extends InheritedWidget {
   const _WorkspacePerformance({
@@ -941,14 +944,13 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
   String? activeServerKey;
   Timer? refreshTimer;
 
+  bool refreshing = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _refreshTmuxList());
-    refreshTimer = Timer.periodic(
-      const Duration(seconds: 2),
-      (_) => _refreshTmuxList(),
-    );
+    _startRefreshTimer();
   }
 
   @override
@@ -973,54 +975,150 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
       return const SizedBox.shrink();
     }
     activeServerKey = _serverKey(active);
-    final sessions = _visibleTmuxSessions(active);
-    if (sessions.isEmpty) {
+    final visibleSessions = _visibleTmuxSessions(active);
+    if (visibleSessions.isEmpty) {
       return const SizedBox.shrink();
     }
+    final sessions = widget.state.orderedTmuxSessions(active, visibleSessions);
+    final labelsByName = <String, String>{
+      for (var index = 0; index < visibleSessions.length; index += 1)
+        visibleSessions[index].name: '${index + 1}',
+    };
+    final customNamesByName = <String, String?>{
+      for (final session in sessions)
+        session.name: widget.state.tmuxTabName(active, session.name),
+    };
+    final tabWidthsByName = <String, double>{
+      for (final session in sessions)
+        session.name: customNamesByName[session.name] == null ? 32 : 104,
+    };
     return SizedBox(
       height: 32,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        itemCount: sessions.length + 1,
-        separatorBuilder: (_, __) => const SizedBox(width: 5),
-        itemBuilder: (context, index) {
-          if (index == sessions.length) {
-            return _SessionAddButton(
-              tooltip: context.l10n.addNewTmuxSession,
-              onPressed: widget.state.busy
-                  ? null
-                  : () => unawaited(
-                        widget.state.createTerminalSessionFromActive(
-                          initialPaneIndex: 0,
-                          selectNewTmux: true,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final desiredTabsWidth = sessions.fold<double>(
+            0,
+            (width, session) =>
+                width + (tabWidthsByName[session.name] ?? 32) + 5,
+          );
+          final tabsWidth = math.min(
+            desiredTabsWidth,
+            math.max(0.0, constraints.maxWidth - 32.0),
+          );
+          return Row(
+            children: [
+              SizedBox(
+                width: tabsWidth,
+                child: ReorderableListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  buildDefaultDragHandles: false,
+                  itemCount: sessions.length,
+                  onReorderItem: (oldIndex, newIndex) => unawaited(
+                    widget.state.reorderTmuxSessions(
+                      active,
+                      sessions,
+                      oldIndex,
+                      newIndex,
+                    ),
+                  ),
+                  proxyDecorator: (child, index, animation) => AnimatedBuilder(
+                    animation: animation,
+                    builder: (context, _) => Transform.scale(
+                      scale: 1 + (animation.value * 0.06),
+                      child: Material(
+                        color: Colors.transparent,
+                        elevation: 4 * animation.value,
+                        borderRadius: BorderRadius.circular(7),
+                        child: child,
+                      ),
+                    ),
+                  ),
+                  itemBuilder: (context, index) {
+                    final session = sessions[index];
+                    final selected =
+                        session.name == active.selectedTmuxSessionName;
+                    final customName = customNamesByName[session.name];
+                    return Padding(
+                      key: ValueKey(session.name),
+                      padding: const EdgeInsets.only(right: 5),
+                      child: _TmuxTabReorderDragStartListener(
+                        index: index,
+                        child: _SessionNumberButton(
+                          label: customName ??
+                              labelsByName[session.name] ??
+                              '${index + 1}',
+                          width: tabWidthsByName[session.name] ?? 32,
+                          selected: selected,
+                          attentionState: session.attentionState,
+                          onRename: () => unawaited(
+                            _showTmuxTabNameDialog(
+                              context,
+                              widget.state,
+                              active,
+                              session.name,
+                            ),
+                          ),
+                          onPressed: () async {
+                            widget.state
+                                .acknowledgeCompletedTmuxSession(session);
+                            if (selected) {
+                              await _showTmuxTabNameDialog(
+                                context,
+                                widget.state,
+                                active,
+                                session.name,
+                              );
+                              return;
+                            }
+                            await widget.state.selectTmuxSession(session);
+                          },
                         ),
                       ),
-            );
-          }
-          final session = sessions[index];
-          return _SessionNumberButton(
-            label: '${index + 1}',
-            selected: session.name == active.selectedTmuxSessionName,
-            attentionState: session.attentionState,
-            onPressed: () async {
-              widget.state.acknowledgeCompletedTmuxSession(session);
-              await widget.state.selectTmuxSession(session);
-            },
+                    );
+                  },
+                ),
+              ),
+              _SessionAddButton(
+                tooltip: context.l10n.addNewTmuxSession,
+                onPressed: widget.state.busy
+                    ? null
+                    : () => unawaited(
+                          widget.state.createTerminalSessionFromActive(
+                            initialPaneIndex: 0,
+                            selectNewTmux: true,
+                          ),
+                        ),
+              ),
+            ],
           );
         },
       ),
     );
   }
 
+  void _startRefreshTimer() {
+    refreshTimer?.cancel();
+    refreshTimer = Timer.periodic(
+      tmuxBackgroundRefreshInterval,
+      (_) => _refreshTmuxList(),
+    );
+  }
+
   void _refreshTmuxList() {
-    if (!mounted) {
+    if (!mounted || refreshing) {
       return;
     }
     final active = widget.state.activeSession;
     activeServerKey = _serverKey(active);
-    if (active?.tmuxAvailable == true) {
-      unawaited(widget.state.refreshActiveTmuxSessions(silent: true));
+    if (active?.tmuxAvailable != true) {
+      return;
     }
+    refreshing = true;
+    unawaited(
+      widget.state.refreshActiveTmuxSessions(silent: true).whenComplete(() {
+        refreshing = false;
+      }),
+    );
   }
 
   String? _serverKey(LiveSshSession? session) {
@@ -1117,17 +1215,36 @@ class _SessionAddButtonState extends State<_SessionAddButton> {
   }
 }
 
+class _TmuxTabReorderDragStartListener extends ReorderableDragStartListener {
+  const _TmuxTabReorderDragStartListener({
+    required super.index,
+    required super.child,
+  });
+
+  @override
+  MultiDragGestureRecognizer createRecognizer() {
+    return DelayedMultiDragGestureRecognizer(
+      delay: _tmuxTabReorderDelay,
+      debugOwner: this,
+    );
+  }
+}
+
 class _SessionNumberButton extends StatefulWidget {
   const _SessionNumberButton({
     required this.label,
+    required this.width,
     required this.selected,
     required this.attentionState,
+    required this.onRename,
     required this.onPressed,
   });
 
   final String label;
+  final double width;
   final bool selected;
   final TerminalAttentionState attentionState;
+  final VoidCallback onRename;
   final VoidCallback onPressed;
 
   @override
@@ -1169,6 +1286,7 @@ class _SessionNumberButtonState extends State<_SessionNumberButton>
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: widget.onPressed,
+      onDoubleTap: widget.onRename,
       onTapDown: (_) => _setPressed(true),
       onTapUp: (_) => _setPressed(false),
       onTapCancel: () => _setPressed(false),
@@ -1183,8 +1301,9 @@ class _SessionNumberButtonState extends State<_SessionNumberButton>
             return AnimatedContainer(
               duration: const Duration(milliseconds: 120),
               curve: Curves.easeOut,
-              width: 32,
+              width: widget.width,
               height: 30,
+              padding: const EdgeInsets.symmetric(horizontal: 7),
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 color: style.fill,
@@ -1203,6 +1322,8 @@ class _SessionNumberButtonState extends State<_SessionNumberButton>
               child: Text(
                 widget.label,
                 maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
                 style: TextStyle(
                   color: style.foreground,
                   fontSize: 12,
@@ -1279,6 +1400,64 @@ class _SessionNumberButtonState extends State<_SessionNumberButton>
     }
     setState(() => pressed = value);
   }
+}
+
+Future<void> _showTmuxTabNameDialog(
+  BuildContext context,
+  AppState state,
+  LiveSshSession session,
+  String tmuxName,
+) {
+  final controller = TextEditingController(
+    text: state.tmuxTabName(session, tmuxName) ?? '',
+  );
+  return showDialog<void>(
+    context: context,
+    builder: (context) {
+      return AlertDialog(
+        title: Text(context.l10n.renameTab),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 32,
+          textInputAction: TextInputAction.done,
+          decoration: InputDecoration(
+            labelText: context.l10n.tabName,
+          ),
+          onSubmitted: (value) async {
+            await state.setTmuxTabName(session, tmuxName, value);
+            if (context.mounted) {
+              Navigator.pop(context);
+            }
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await state.setTmuxTabName(session, tmuxName, '');
+              if (context.mounted) {
+                Navigator.pop(context);
+              }
+            },
+            child: Text(context.l10n.remove),
+          ),
+          FilledButton(
+            onPressed: () async {
+              await state.setTmuxTabName(
+                session,
+                tmuxName,
+                controller.text,
+              );
+              if (context.mounted) {
+                Navigator.pop(context);
+              }
+            },
+            child: Text(context.l10n.save),
+          ),
+        ],
+      );
+    },
+  );
 }
 
 class _SessionNumberAttentionStyle {
@@ -1443,7 +1622,7 @@ class _TmuxSessionChooserState extends State<_TmuxSessionChooser> {
 
   Duration get refreshInterval => widget.state.lowEndModeEnabled
       ? const Duration(seconds: 4)
-      : const Duration(seconds: 2);
+      : tmuxBackgroundRefreshInterval;
 
   @override
   void initState() {

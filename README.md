@@ -67,7 +67,7 @@ test/       Flutter tests
 
 Install the usual Flutter development environment before building.
 
-- Flutter SDK, with Dart included
+- Flutter SDK 3.44.6 or later, with Dart included
 - Android Studio
 - Android SDK Platform Tools
 - Android SDK Command-line Tools
