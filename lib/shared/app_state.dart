@@ -690,10 +690,18 @@ class AppState extends ChangeNotifier {
   Future<void> setTmuxTabName(
     LiveSshSession session,
     String tmuxName,
-    String name,
-  ) {
+    String name, {
+    String? defaultName,
+  }) {
+    final trimmedName = name.trim();
+    final trimmedDefaultName = defaultName?.trim();
+    final nameToSave = trimmedDefaultName != null &&
+            trimmedDefaultName.isNotEmpty &&
+            trimmedName == trimmedDefaultName
+        ? ''
+        : trimmedName;
     return _serializeTmuxTabNameMutation(
-      () => _setTmuxTabName(session, tmuxName, name),
+      () => _setTmuxTabName(session, tmuxName, nameToSave),
     );
   }
 

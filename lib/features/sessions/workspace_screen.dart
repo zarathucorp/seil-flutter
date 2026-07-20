@@ -1038,15 +1038,15 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
                     final selected =
                         session.name == active.selectedTmuxSessionName;
                     final customName = customNamesByName[session.name];
+                    final defaultLabel =
+                        labelsByName[session.name] ?? (index + 1).toString();
                     return Padding(
                       key: ValueKey(session.name),
                       padding: const EdgeInsets.only(right: 5),
                       child: _TmuxTabReorderDragStartListener(
                         index: index,
                         child: _SessionNumberButton(
-                          label: customName ??
-                              labelsByName[session.name] ??
-                              '${index + 1}',
+                          label: customName ?? defaultLabel,
                           width: tabWidthsByName[session.name] ?? 32,
                           selected: selected,
                           attentionState: session.attentionState,
@@ -1056,6 +1056,7 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
                               widget.state,
                               active,
                               session.name,
+                              defaultLabel,
                             ),
                           ),
                           onPressed: () async {
@@ -1067,6 +1068,7 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
                                 widget.state,
                                 active,
                                 session.name,
+                                defaultLabel,
                               );
                               return;
                             }
@@ -1407,6 +1409,7 @@ Future<void> _showTmuxTabNameDialog(
   AppState state,
   LiveSshSession session,
   String tmuxName,
+  String defaultName,
 ) {
   final controller = TextEditingController(
     text: state.tmuxTabName(session, tmuxName) ?? '',
@@ -1425,7 +1428,12 @@ Future<void> _showTmuxTabNameDialog(
             labelText: context.l10n.tabName,
           ),
           onSubmitted: (value) async {
-            await state.setTmuxTabName(session, tmuxName, value);
+            await state.setTmuxTabName(
+              session,
+              tmuxName,
+              value,
+              defaultName: defaultName,
+            );
             if (context.mounted) {
               Navigator.pop(context);
             }
@@ -1447,6 +1455,7 @@ Future<void> _showTmuxTabNameDialog(
                 session,
                 tmuxName,
                 controller.text,
+                defaultName: defaultName,
               );
               if (context.mounted) {
                 Navigator.pop(context);
