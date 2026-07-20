@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:seil_mobile/core/settings/app_settings_repository.dart';
@@ -124,6 +126,65 @@ void main() {
     expect(state.tmuxTabName(liveSession, 'one'), isNull);
     expect(settingsRepository.savedTabNames, isEmpty);
   });
+
+  test('renaming one custom tab preserves every other custom name', () async {
+    final settingsRepository = _FakeSettingsRepository();
+    final state = AppState(
+      authRepository: _FakeAuthRepository(),
+      connectionRepository: _FakeConnectionRepository(),
+      hostKeyRepository: _FakeHostKeyRepository(),
+      settingsRepository: settingsRepository,
+      sshSessionService: _FakeSshSessionService(),
+    );
+    final liveSession = _liveSession();
+
+    await state.setTmuxTabName(liveSession, 'one', 'Deploy');
+    await state.setTmuxTabName(liveSession, 'two', 'Logs');
+    await state.setTmuxTabName(liveSession, 'one', 'Release');
+
+    expect(state.tmuxTabName(liveSession, 'one'), 'Release');
+    expect(state.tmuxTabName(liveSession, 'two'), 'Logs');
+    expect(
+      settingsRepository.savedTabNames[liveSession.connection.fingerprint],
+      {
+        'one': 'Release',
+        'two': 'Logs',
+      },
+    );
+  });
+
+  test('overlapping custom-name saves cannot overwrite a newer name', () async {
+    final settingsRepository = _BlockingSettingsRepository();
+    final state = AppState(
+      authRepository: _FakeAuthRepository(),
+      connectionRepository: _FakeConnectionRepository(),
+      hostKeyRepository: _FakeHostKeyRepository(),
+      settingsRepository: settingsRepository,
+      sshSessionService: _FakeSshSessionService(),
+    );
+    final liveSession = _liveSession();
+
+    final firstSave = state.setTmuxTabName(liveSession, 'one', 'Deploy');
+    await settingsRepository.firstSaveStarted.future;
+
+    final secondSave = state.setTmuxTabName(liveSession, 'two', 'Logs');
+    await pumpEventQueue();
+
+    expect(settingsRepository.saveCount, 1);
+
+    settingsRepository.releaseFirstSave.complete();
+    await Future.wait([firstSave, secondSave]);
+
+    expect(state.tmuxTabName(liveSession, 'one'), 'Deploy');
+    expect(state.tmuxTabName(liveSession, 'two'), 'Logs');
+    expect(
+      settingsRepository.savedTabNames[liveSession.connection.fingerprint],
+      {
+        'one': 'Deploy',
+        'two': 'Logs',
+      },
+    );
+  });
 }
 
 LiveSshSession _liveSession() {
@@ -191,6 +252,24 @@ class _FakeSettingsRepository extends Fake implements AppSettingsRepository {
       for (final entry in names.entries)
         entry.key: Map<String, String>.from(entry.value),
     };
+  }
+}
+
+class _BlockingSettingsRepository extends _FakeSettingsRepository {
+  final firstSaveStarted = Completer<void>();
+  final releaseFirstSave = Completer<void>();
+  int saveCount = 0;
+
+  @override
+  Future<void> saveTmuxTabNames(
+    Map<String, Map<String, String>> names,
+  ) async {
+    saveCount += 1;
+    if (saveCount == 1) {
+      firstSaveStarted.complete();
+      await releaseFirstSave.future;
+    }
+    await super.saveTmuxTabNames(names);
   }
 }
 

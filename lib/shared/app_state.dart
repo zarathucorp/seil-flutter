@@ -77,6 +77,7 @@ class AppState extends ChangeNotifier {
   int _busyDepth = 0;
   int _terminalAttentionNotificationSerial = 0;
   Future<void> _sessionStartTail = Future.value();
+  Future<void> _tmuxTabNameMutationTail = Future.value();
   DateTime? _backgroundedAt;
   DateTime? _lastResumedAt;
   Timer? _backgroundKeepAliveTimer;
@@ -687,6 +688,16 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> setTmuxTabName(
+    LiveSshSession session,
+    String tmuxName,
+    String name,
+  ) {
+    return _serializeTmuxTabNameMutation(
+      () => _setTmuxTabName(session, tmuxName, name),
+    );
+  }
+
+  Future<void> _setTmuxTabName(
     LiveSshSession session,
     String tmuxName,
     String name,
@@ -2099,6 +2110,23 @@ class AppState extends ChangeNotifier {
     final previous = _sessionStartTail.catchError((Object _) {});
     final completer = Completer<void>();
     _sessionStartTail = completer.future;
+    return previous.then((_) async {
+      try {
+        return await action();
+      } finally {
+        if (!completer.isCompleted) {
+          completer.complete();
+        }
+      }
+    });
+  }
+
+  Future<T> _serializeTmuxTabNameMutation<T>(
+    Future<T> Function() action,
+  ) {
+    final previous = _tmuxTabNameMutationTail.catchError((Object _) {});
+    final completer = Completer<void>();
+    _tmuxTabNameMutationTail = completer.future;
     return previous.then((_) async {
       try {
         return await action();
