@@ -127,6 +127,35 @@ void main() {
     expect(settingsRepository.savedTabNames, isEmpty);
   });
 
+  test('restoring the default tmux tab label removes the custom name',
+      () async {
+    final settingsRepository = _FakeSettingsRepository();
+    final state = AppState(
+      authRepository: _FakeAuthRepository(),
+      connectionRepository: _FakeConnectionRepository(),
+      hostKeyRepository: _FakeHostKeyRepository(),
+      settingsRepository: settingsRepository,
+      sshSessionService: _FakeSshSessionService(),
+    );
+    final liveSession = _liveSession();
+
+    await state.setTmuxTabName(
+      liveSession,
+      'one',
+      '이규배',
+      defaultName: '57',
+    );
+    await state.setTmuxTabName(
+      liveSession,
+      'one',
+      '57',
+      defaultName: '57',
+    );
+
+    expect(state.tmuxTabName(liveSession, 'one'), isNull);
+    expect(settingsRepository.savedTabNames, isEmpty);
+  });
+
   test('renaming one custom tab preserves every other custom name', () async {
     final settingsRepository = _FakeSettingsRepository();
     final state = AppState(
