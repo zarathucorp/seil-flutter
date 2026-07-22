@@ -943,6 +943,7 @@ class _SessionNumberBar extends StatefulWidget {
 class _SessionNumberBarState extends State<_SessionNumberBar> {
   String? activeServerKey;
   Timer? refreshTimer;
+  final Set<String> pendingDefaultNameCleanupServers = {};
 
   bool refreshing = false;
 
@@ -984,10 +985,22 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
       for (var index = 0; index < visibleSessions.length; index += 1)
         visibleSessions[index].name: '${index + 1}',
     };
-    final customNamesByName = <String, String?>{
+    final storedCustomNamesByName = <String, String?>{
       for (final session in sessions)
         session.name: widget.state.tmuxTabName(active, session.name),
     };
+    final redundantDefaultNames = <String, String>{
+      for (final session in sessions)
+        if (storedCustomNamesByName[session.name] == labelsByName[session.name])
+          session.name: labelsByName[session.name]!,
+    };
+    final customNamesByName = <String, String?>{
+      for (final session in sessions)
+        session.name: redundantDefaultNames.containsKey(session.name)
+            ? null
+            : storedCustomNamesByName[session.name],
+    };
+    _scheduleDefaultNameCleanup(active, redundantDefaultNames);
     final tabWidthsByName = <String, double>{
       for (final session in sessions)
         session.name: customNamesByName[session.name] == null ? 32 : 104,
@@ -1038,15 +1051,15 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
                     final selected =
                         session.name == active.selectedTmuxSessionName;
                     final customName = customNamesByName[session.name];
+                    final defaultLabel =
+                        labelsByName[session.name] ?? (index + 1).toString();
                     return Padding(
                       key: ValueKey(session.name),
                       padding: const EdgeInsets.only(right: 5),
                       child: _TmuxTabReorderDragStartListener(
                         index: index,
                         child: _SessionNumberButton(
-                          label: customName ??
-                              labelsByName[session.name] ??
-                              '${index + 1}',
+                          label: customName ?? defaultLabel,
                           width: tabWidthsByName[session.name] ?? 32,
                           selected: selected,
                           attentionState: session.attentionState,
@@ -1056,6 +1069,7 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
                               widget.state,
                               active,
                               session.name,
+                              defaultLabel,
                             ),
                           ),
                           onPressed: () async {
@@ -1067,6 +1081,7 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
                                 widget.state,
                                 active,
                                 session.name,
+                                defaultLabel,
                               );
                               return;
                             }
@@ -1094,6 +1109,29 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
         },
       ),
     );
+  }
+
+  void _scheduleDefaultNameCleanup(
+    LiveSshSession session,
+    Map<String, String> defaultNames,
+  ) {
+    if (defaultNames.isEmpty) {
+      return;
+    }
+    final serverKey = session.connection.fingerprint;
+    if (!pendingDefaultNameCleanupServers.add(serverKey)) {
+      return;
+    }
+    final state = widget.state;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(
+        state
+            .removeTmuxTabNamesMatchingDefaults(session, defaultNames)
+            .whenComplete(
+              () => pendingDefaultNameCleanupServers.remove(serverKey),
+            ),
+      );
+    });
   }
 
   void _startRefreshTimer() {
@@ -1407,6 +1445,7 @@ Future<void> _showTmuxTabNameDialog(
   AppState state,
   LiveSshSession session,
   String tmuxName,
+  String defaultName,
 ) {
   final controller = TextEditingController(
     text: state.tmuxTabName(session, tmuxName) ?? '',
@@ -1425,7 +1464,12 @@ Future<void> _showTmuxTabNameDialog(
             labelText: context.l10n.tabName,
           ),
           onSubmitted: (value) async {
-            await state.setTmuxTabName(session, tmuxName, value);
+            await state.setTmuxTabName(
+              session,
+              tmuxName,
+              value,
+              defaultName: defaultName,
+            );
             if (context.mounted) {
               Navigator.pop(context);
             }
@@ -1447,6 +1491,7 @@ Future<void> _showTmuxTabNameDialog(
                 session,
                 tmuxName,
                 controller.text,
+                defaultName: defaultName,
               );
               if (context.mounted) {
                 Navigator.pop(context);
