@@ -18,7 +18,7 @@ const _tmuxWindowMarker = '__SEIL_TMUX_WINDOWS__';
 const _tmuxPanePathMarker = '__SEIL_TMUX_PANE_PATHS__';
 const _tmuxPaneTailMarker = '__SEIL_TMUX_PANE_TAILS__';
 const _sshClosedMessage = SeilErrorCodes.reconnecting;
-const _sshConnectTimeout = Duration(seconds: 10);
+const _sshConnectTimeout = Duration(seconds: 30);
 
 enum _TmuxListSection { sessions, windows, panes, tails }
 
@@ -51,11 +51,16 @@ class DartSshSessionService implements SshSessionService {
       throw StateError(SeilErrorCodes.sshAgentUnsupported);
     }
 
-    final socket = await SSHSocket.connect(
-      connection.host,
-      connection.port,
-      timeout: _sshConnectTimeout,
-    );
+    late final SSHSocket socket;
+    try {
+      socket = await SSHSocket.connect(
+        connection.host,
+        connection.port,
+        timeout: _sshConnectTimeout,
+      );
+    } on TimeoutException {
+      throw StateError(SeilErrorCodes.sshSocketTimeout);
+    }
     final client = SSHClient(
       socket,
       username: connection.username,
@@ -73,6 +78,9 @@ class DartSshSessionService implements SshSessionService {
     );
     try {
       await session.initialize().timeout(_sshConnectTimeout);
+    } on TimeoutException {
+      session.close();
+      throw StateError(SeilErrorCodes.sshInitializationTimeout);
     } catch (_) {
       session.close();
       rethrow;

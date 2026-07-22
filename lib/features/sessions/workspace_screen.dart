@@ -943,6 +943,7 @@ class _SessionNumberBar extends StatefulWidget {
 class _SessionNumberBarState extends State<_SessionNumberBar> {
   String? activeServerKey;
   Timer? refreshTimer;
+  final Set<String> pendingDefaultNameCleanupServers = {};
 
   bool refreshing = false;
 
@@ -984,10 +985,22 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
       for (var index = 0; index < visibleSessions.length; index += 1)
         visibleSessions[index].name: '${index + 1}',
     };
-    final customNamesByName = <String, String?>{
+    final storedCustomNamesByName = <String, String?>{
       for (final session in sessions)
         session.name: widget.state.tmuxTabName(active, session.name),
     };
+    final redundantDefaultNames = <String, String>{
+      for (final session in sessions)
+        if (storedCustomNamesByName[session.name] == labelsByName[session.name])
+          session.name: labelsByName[session.name]!,
+    };
+    final customNamesByName = <String, String?>{
+      for (final session in sessions)
+        session.name: redundantDefaultNames.containsKey(session.name)
+            ? null
+            : storedCustomNamesByName[session.name],
+    };
+    _scheduleDefaultNameCleanup(active, redundantDefaultNames);
     final tabWidthsByName = <String, double>{
       for (final session in sessions)
         session.name: customNamesByName[session.name] == null ? 32 : 104,
@@ -1096,6 +1109,29 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
         },
       ),
     );
+  }
+
+  void _scheduleDefaultNameCleanup(
+    LiveSshSession session,
+    Map<String, String> defaultNames,
+  ) {
+    if (defaultNames.isEmpty) {
+      return;
+    }
+    final serverKey = session.connection.fingerprint;
+    if (!pendingDefaultNameCleanupServers.add(serverKey)) {
+      return;
+    }
+    final state = widget.state;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(
+        state
+            .removeTmuxTabNamesMatchingDefaults(session, defaultNames)
+            .whenComplete(
+              () => pendingDefaultNameCleanupServers.remove(serverKey),
+            ),
+      );
+    });
   }
 
   void _startRefreshTimer() {

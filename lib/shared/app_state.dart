@@ -77,6 +77,7 @@ class AppState extends ChangeNotifier {
   int _busyDepth = 0;
   int _terminalAttentionNotificationSerial = 0;
   Future<void> _sessionStartTail = Future.value();
+  Future<void> _tmuxSessionOrderMutationTail = Future.value();
   Future<void> _tmuxTabNameMutationTail = Future.value();
   DateTime? _backgroundedAt;
   DateTime? _lastResumedAt;
@@ -649,6 +650,17 @@ class AppState extends ChangeNotifier {
     List<RemoteTmuxSession> sessions,
     int oldIndex,
     int newIndex,
+  ) {
+    return _serializeTmuxSessionOrderMutation(
+      () => _reorderTmuxSessions(session, sessions, oldIndex, newIndex),
+    );
+  }
+
+  Future<void> _reorderTmuxSessions(
+    LiveSshSession session,
+    List<RemoteTmuxSession> sessions,
+    int oldIndex,
+    int newIndex,
   ) async {
     if (oldIndex < 0 || oldIndex >= sessions.length) {
       return;
@@ -703,6 +715,71 @@ class AppState extends ChangeNotifier {
     return _serializeTmuxTabNameMutation(
       () => _setTmuxTabName(session, tmuxName, nameToSave),
     );
+  }
+
+  Future<void> removeTmuxTabNamesMatchingDefaults(
+    LiveSshSession session,
+    Map<String, String> defaultNames,
+  ) {
+    final normalizedDefaults = <String, String>{
+      for (final entry in defaultNames.entries)
+        if (entry.key.trim().isNotEmpty && entry.value.trim().isNotEmpty)
+          entry.key.trim(): entry.value.trim(),
+    };
+    if (normalizedDefaults.isEmpty) {
+      return Future.value();
+    }
+    return _serializeTmuxTabNameMutation(
+      () => _removeTmuxTabNamesMatchingDefaults(
+        session,
+        normalizedDefaults,
+      ),
+    );
+  }
+
+  Future<void> _removeTmuxTabNamesMatchingDefaults(
+    LiveSshSession session,
+    Map<String, String> defaultNames,
+  ) async {
+    final serverKey = session.connection.fingerprint;
+    final serverNames = Map<String, String>.from(
+      _tmuxTabNames[serverKey] ?? const {},
+    );
+    var changed = false;
+    for (final entry in defaultNames.entries) {
+      if (serverNames[entry.key]?.trim() == entry.value) {
+        serverNames.remove(entry.key);
+        changed = true;
+      }
+    }
+    if (!changed) {
+      return;
+    }
+    final previousNames = {
+      for (final entry in _tmuxTabNames.entries)
+        entry.key: Map<String, String>.from(entry.value),
+    };
+    final nextNames = {
+      for (final entry in _tmuxTabNames.entries)
+        entry.key: Map<String, String>.from(entry.value),
+    };
+    if (serverNames.isEmpty) {
+      nextNames.remove(serverKey);
+    } else {
+      nextNames[serverKey] = serverNames;
+    }
+    _tmuxTabNames = nextNames;
+    notifyListeners();
+    try {
+      await settingsRepository.saveTmuxTabNames(_tmuxTabNames);
+    } catch (error) {
+      _tmuxTabNames = previousNames;
+      _setError(
+        seilLocalizedErrorMessage(appLanguageCode, error),
+        showPopup: false,
+      );
+      notifyListeners();
+    }
   }
 
   Future<void> _setTmuxTabName(
@@ -2135,6 +2212,23 @@ class AppState extends ChangeNotifier {
     final previous = _tmuxTabNameMutationTail.catchError((Object _) {});
     final completer = Completer<void>();
     _tmuxTabNameMutationTail = completer.future;
+    return previous.then((_) async {
+      try {
+        return await action();
+      } finally {
+        if (!completer.isCompleted) {
+          completer.complete();
+        }
+      }
+    });
+  }
+
+  Future<T> _serializeTmuxSessionOrderMutation<T>(
+    Future<T> Function() action,
+  ) {
+    final previous = _tmuxSessionOrderMutationTail.catchError((Object _) {});
+    final completer = Completer<void>();
+    _tmuxSessionOrderMutationTail = completer.future;
     return previous.then((_) async {
       try {
         return await action();

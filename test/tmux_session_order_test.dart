@@ -101,6 +101,46 @@ void main() {
     );
   });
 
+  test('overlapping tab-order saves cannot overwrite a newer order', () async {
+    final settingsRepository = _BlockingOrderSettingsRepository();
+    final state = AppState(
+      authRepository: _FakeAuthRepository(),
+      connectionRepository: _FakeConnectionRepository(),
+      hostKeyRepository: _FakeHostKeyRepository(),
+      settingsRepository: settingsRepository,
+      sshSessionService: _FakeSshSessionService(),
+    );
+    final liveSession = _liveSession();
+    final original = [
+      _tmuxSession('one'),
+      _tmuxSession('two'),
+      _tmuxSession('three'),
+    ];
+
+    final firstSave = state.reorderTmuxSessions(liveSession, original, 0, 2);
+    await settingsRepository.firstSaveStarted.future;
+
+    final firstOrder = state.orderedTmuxSessions(liveSession, original);
+    final secondSave = state.reorderTmuxSessions(liveSession, firstOrder, 0, 1);
+    await pumpEventQueue();
+
+    expect(settingsRepository.saveCount, 1);
+
+    settingsRepository.releaseFirstSave.complete();
+    await Future.wait([firstSave, secondSave]);
+
+    expect(
+      state
+          .orderedTmuxSessions(liveSession, original)
+          .map((session) => session.name),
+      ['three', 'two', 'one'],
+    );
+    expect(
+      settingsRepository.savedOrders[liveSession.connection.fingerprint],
+      ['three', 'two', 'one'],
+    );
+  });
+
   test('stores and removes a custom tmux tab name', () async {
     final settingsRepository = _FakeSettingsRepository();
     final state = AppState(
@@ -154,6 +194,33 @@ void main() {
 
     expect(state.tmuxTabName(liveSession, 'one'), isNull);
     expect(settingsRepository.savedTabNames, isEmpty);
+  });
+
+  test('cleans up a legacy custom name that matches the default label',
+      () async {
+    final settingsRepository = _FakeSettingsRepository();
+    final state = AppState(
+      authRepository: _FakeAuthRepository(),
+      connectionRepository: _FakeConnectionRepository(),
+      hostKeyRepository: _FakeHostKeyRepository(),
+      settingsRepository: settingsRepository,
+      sshSessionService: _FakeSshSessionService(),
+    );
+    final liveSession = _liveSession();
+
+    await state.setTmuxTabName(liveSession, 'one', '57');
+    await state.setTmuxTabName(liveSession, 'two', 'Logs');
+    await state.removeTmuxTabNamesMatchingDefaults(
+      liveSession,
+      {'one': '57', 'two': '2'},
+    );
+
+    expect(state.tmuxTabName(liveSession, 'one'), isNull);
+    expect(state.tmuxTabName(liveSession, 'two'), 'Logs');
+    expect(
+      settingsRepository.savedTabNames[liveSession.connection.fingerprint],
+      {'two': 'Logs'},
+    );
   });
 
   test('renaming one custom tab preserves every other custom name', () async {
@@ -299,6 +366,24 @@ class _BlockingSettingsRepository extends _FakeSettingsRepository {
       await releaseFirstSave.future;
     }
     await super.saveTmuxTabNames(names);
+  }
+}
+
+class _BlockingOrderSettingsRepository extends _FakeSettingsRepository {
+  final firstSaveStarted = Completer<void>();
+  final releaseFirstSave = Completer<void>();
+  int saveCount = 0;
+
+  @override
+  Future<void> saveTmuxSessionOrders(
+    Map<String, List<String>> orders,
+  ) async {
+    saveCount += 1;
+    if (saveCount == 1) {
+      firstSaveStarted.complete();
+      await releaseFirstSave.future;
+    }
+    await super.saveTmuxSessionOrders(orders);
   }
 }
 

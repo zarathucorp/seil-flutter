@@ -1535,6 +1535,25 @@ String seilLocalizedErrorMessage(String languageCode, Object error) {
 }
 
 String seilConnectionFailureMessage(String languageCode, Object error) {
+  final rawMessage = _stripErrorPrefix(error.toString());
+  if (rawMessage == SeilErrorCodes.sshSocketTimeout) {
+    return _localizedByCode(
+      languageCode,
+      en: 'Connection failed: TCP connection to the server timed out (30s).',
+      ko: '연결 실패: 서버 TCP 연결 시간 초과 (30초)',
+      ja: '接続に失敗しました: サーバーへの TCP 接続がタイムアウトしました（30 秒）',
+      zh: '连接失败：服务器 TCP 连接超时（30 秒）',
+    );
+  }
+  if (rawMessage == SeilErrorCodes.sshInitializationTimeout) {
+    return _localizedByCode(
+      languageCode,
+      en: 'Connection failed: TCP connected, but SSH authentication or initialization timed out (30s).',
+      ko: '연결 실패: TCP 연결 후 SSH 인증 또는 초기화 시간 초과 (30초)',
+      ja: '接続に失敗しました: TCP 接続後の SSH 認証または初期化がタイムアウトしました（30 秒）',
+      zh: '连接失败：TCP 已连接，但 SSH 认证或初始化超时（30 秒）',
+    );
+  }
   final message = seilLocalizedErrorMessage(languageCode, error);
   final lower = message.toLowerCase();
   final type = error.runtimeType.toString().toLowerCase();
@@ -1543,10 +1562,10 @@ String seilConnectionFailureMessage(String languageCode, Object error) {
       lower.contains('timeout')) {
     return _localizedByCode(
       languageCode,
-      en: 'Connection failed: server did not respond (10s timeout)',
-      ko: '연결 실패: 서버 응답 없음 (10초 초과)',
-      ja: '接続に失敗しました: サーバーが応答しません (10 秒タイムアウト)',
-      zh: '连接失败：服务器未响应（10 秒超时）',
+      en: 'Connection failed: server did not respond (30s timeout)',
+      ko: '연결 실패: 서버 응답 없음 (30초 초과)',
+      ja: '接続に失敗しました: サーバーが応答しません (30 秒タイムアウト)',
+      zh: '连接失败：服务器未响应（30 秒超时）',
     );
   }
   if (type.contains('sshauthfail') ||
