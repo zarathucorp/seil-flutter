@@ -63,6 +63,19 @@ if [[ -n "${MACOS_SIGN_IDENTITY:-}" ]]; then
     "$app_path"
 fi
 codesign --verify --deep --strict --verbose=2 "$app_path"
+echo "Effective app entitlements:"
+codesign --display --entitlements :- "$app_path"
+
+# macOS 26 rejects some invalid or restricted entitlements only when launchd
+# attempts to spawn the app. Exercise that exact path before publishing.
+echo "Verifying launch through macOS Launch Services..."
+open -n "$app_path"
+sleep 5
+if ! pgrep -x SEIL >/dev/null; then
+  echo "SEIL did not remain running after Launch Services opened it." >&2
+  exit 1
+fi
+pkill -TERM -x SEIL || true
 
 staging_dir="$(mktemp -d "${TMPDIR:-/tmp}/seil-dmg.XXXXXX")"
 cleanup() {
