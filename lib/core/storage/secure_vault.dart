@@ -3,10 +3,16 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 class SecureVault {
   const SecureVault();
 
+  static const macOsOptions = MacOsOptions(
+    accessibility: KeychainAccessibility.first_unlock_this_device,
+    useDataProtectionKeyChain: false,
+  );
+
   static const _storage = FlutterSecureStorage(
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
     iOptions: IOSOptions(
         accessibility: KeychainAccessibility.first_unlock_this_device),
+    mOptions: macOsOptions,
   );
 
   String connectionSecretKey(String connectionId) =>
