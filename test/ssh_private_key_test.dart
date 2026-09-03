@@ -14,6 +14,23 @@ u4j6rZMzj2304gvRvc+51dss57/fXNuCc/q9Q=
 ''';
 
 void main() {
+  test('keyboard-interactive answers one hidden prompt with the password', () {
+    expect(
+      sshKeyboardInteractivePasswordResponses([false], 'server-password'),
+      ['server-password'],
+    );
+  });
+
+  test('keyboard-interactive does not guess multi-factor responses', () {
+    expect(
+      sshKeyboardInteractivePasswordResponses(
+        [false, false],
+        'server-password',
+      ),
+      isNull,
+    );
+  });
+
   test('encrypted private key requires a passphrase', () {
     expect(
       () => parseSshPrivateKey(_encryptedPrivateKey, null),

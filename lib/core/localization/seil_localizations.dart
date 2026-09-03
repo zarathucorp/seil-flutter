@@ -1586,6 +1586,24 @@ String seilConnectionFailureMessage(String languageCode, Object error) {
       zh: '连接失败：TCP 已连接，但 SSH 认证或初始化超时（30 秒）',
     );
   }
+  if (rawMessage == SeilErrorCodes.sshPasswordAuthenticationRejected) {
+    return _localizedByCode(
+      languageCode,
+      en: 'Connection failed: the SSH server rejected both password and keyboard-interactive authentication. Check the SSH username and server password.',
+      ko: '연결 실패: SSH 서버가 비밀번호 및 keyboard-interactive 인증을 모두 거부했습니다. SSH 사용자명과 서버 비밀번호를 확인해 주세요.',
+      ja: '接続に失敗しました: SSH サーバーがパスワード認証と keyboard-interactive 認証の両方を拒否しました。SSH ユーザー名とサーバーパスワードを確認してください。',
+      zh: '连接失败：SSH 服务器拒绝了密码和 keyboard-interactive 认证。请检查 SSH 用户名和服务器密码。',
+    );
+  }
+  if (rawMessage == SeilErrorCodes.sshPrivateKeyAuthenticationRejected) {
+    return _localizedByCode(
+      languageCode,
+      en: 'Connection failed: the SSH server rejected this private key. Check the SSH username and that the matching public key is in authorized_keys.',
+      ko: '연결 실패: SSH 서버가 이 개인 키를 거부했습니다. SSH 사용자명과 대응하는 공개 키가 서버의 authorized_keys에 등록되어 있는지 확인해 주세요.',
+      ja: '接続に失敗しました: SSH サーバーがこの秘密鍵を拒否しました。SSH ユーザー名と、対応する公開鍵が authorized_keys に登録されているか確認してください。',
+      zh: '连接失败：SSH 服务器拒绝了此私钥。请检查 SSH 用户名以及对应公钥是否已加入 authorized_keys。',
+    );
+  }
   final message = seilLocalizedErrorMessage(languageCode, error);
   final lower = message.toLowerCase();
   final type = error.runtimeType.toString().toLowerCase();

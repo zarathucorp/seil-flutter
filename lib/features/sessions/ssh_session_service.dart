@@ -74,6 +74,12 @@ class DartSshSessionService implements SshSessionService {
       keepAliveInterval: const Duration(seconds: 10),
       onPasswordRequest:
           connection.authMode == AuthMode.password ? () => secret : null,
+      onUserInfoRequest: connection.authMode == AuthMode.password
+          ? (request) => sshKeyboardInteractivePasswordResponses(
+                request.prompts.map((prompt) => prompt.echo).toList(),
+                secret,
+              )
+          : null,
       identities: identities,
     );
     final session = LiveSshSession._(
@@ -87,12 +93,32 @@ class DartSshSessionService implements SshSessionService {
     } on TimeoutException {
       session.close();
       throw StateError(SeilErrorCodes.sshInitializationTimeout);
+    } on SSHAuthFailError {
+      session.close();
+      throw StateError(
+        connection.authMode == AuthMode.privateKey
+            ? SeilErrorCodes.sshPrivateKeyAuthenticationRejected
+            : SeilErrorCodes.sshPasswordAuthenticationRejected,
+      );
     } catch (_) {
       session.close();
       rethrow;
     }
     return session;
   }
+}
+
+List<String>? sshKeyboardInteractivePasswordResponses(
+  List<bool> promptEchoes,
+  String password,
+) {
+  if (promptEchoes.isEmpty) {
+    return const [];
+  }
+  if (promptEchoes.length != 1 || promptEchoes.single) {
+    return null;
+  }
+  return [password];
 }
 
 List<SSHKeyPair> parseSshPrivateKey(String privateKey, String? passphrase) {
