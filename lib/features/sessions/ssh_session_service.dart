@@ -19,6 +19,8 @@ const _tmuxPanePathMarker = '__SEIL_TMUX_PANE_PATHS__';
 const _tmuxPaneTailMarker = '__SEIL_TMUX_PANE_TAILS__';
 const _sshClosedMessage = SeilErrorCodes.reconnecting;
 const _sshConnectTimeout = Duration(seconds: 30);
+const _sftpMetadataTimeout = Duration(seconds: 12);
+const _sftpTransferTimeout = Duration(seconds: 30);
 
 enum _TmuxListSection { sessions, windows, panes, tails }
 
@@ -75,6 +77,7 @@ class DartSshSessionService implements SshSessionService {
       client: client,
       connection: connection,
       commandQueue: SshCommandQueue(),
+      monitorCommandQueue: SshCommandQueue(),
     );
     try {
       await session.initialize().timeout(_sshConnectTimeout);
@@ -94,20 +97,24 @@ class LiveSshSession {
     required this.client,
     required this.connection,
     required SshCommandQueue commandQueue,
+    required SshCommandQueue monitorCommandQueue,
   })  : id = const Uuid().v4(),
-        _commandQueue = commandQueue;
+        _commandQueue = commandQueue,
+        _monitorCommandQueue = monitorCommandQueue;
 
   LiveSshSession.testing({
     required this.client,
     required this.connection,
     String? id,
   })  : id = id ?? const Uuid().v4(),
-        _commandQueue = SshCommandQueue();
+        _commandQueue = SshCommandQueue(),
+        _monitorCommandQueue = SshCommandQueue();
 
   final String id;
   final SSHClient client;
   final SavedConnection connection;
   final SshCommandQueue _commandQueue;
+  final SshCommandQueue _monitorCommandQueue;
   late final String hostName;
   late final String homePath;
   late final bool tmuxAvailable;
@@ -181,6 +188,20 @@ class LiveSshSession {
     return _commandQueue.run(
       () => _executeCommand(command),
       priority: priority,
+      coalescingKey: coalescingKey,
+    );
+  }
+
+  /// Runs a full-workspace status scan without blocking terminal input or
+  /// foreground pane capture. The monitor queue is shared by all terminal
+  /// workspaces backed by this SSH client, so only one scan runs at a time.
+  Future<String> runMonitorCommand(
+    String command, {
+    String? coalescingKey,
+  }) async {
+    return _monitorCommandQueue.run(
+      () => _executeCommand(command),
+      priority: SshCommandPriority.background,
       coalescingKey: coalescingKey,
     );
   }
@@ -593,9 +614,8 @@ class LiveSshSession {
       return const [];
     }
 
-    final output = await runCommand(
+    final output = await runMonitorCommand(
       buildTmuxSessionStatusCommand(),
-      priority: SshCommandPriority.background,
       coalescingKey: 'tmux-session-status',
     );
     final panePaths = <String, String>{};
@@ -919,6 +939,7 @@ class LiveSshSession {
       client: client,
       connection: connection,
       commandQueue: _commandQueue,
+      monitorCommandQueue: _monitorCommandQueue,
     );
     session.hostName = hostName;
     session.homePath = homePath;
@@ -982,47 +1003,62 @@ class LiveSshSession {
     return client.ping();
   }
 
-  Future<RemoteDirectory> listDirectory(String remotePath) async {
-    final sftpClient = await sftp();
-    final normalized = _normalizeRemoteDirectory(remotePath);
-    final stats = await sftpClient.stat(normalized);
-    if (!stats.isDirectory) {
-      throw StateError(SeilErrorCodes.directoryPathRequired);
+  Future<T> _runSftpOperation<T>(
+    Future<T> Function(SftpClient client) operation, {
+    Duration timeout = _sftpMetadataTimeout,
+  }) async {
+    try {
+      final sftpClient = await sftp().timeout(timeout);
+      return await operation(sftpClient).timeout(timeout);
+    } on TimeoutException {
+      _sftp?.close();
+      _sftp = null;
+      throw StateError(SeilErrorCodes.sftpOperationTimeout);
     }
+  }
 
-    final items = await sftpClient.listdir(normalized);
-    final entries = items
-        .where((item) => item.filename != '.' && item.filename != '..')
-        .map((item) {
-      final fullPath = p.posix.join(normalized, item.filename);
-      final kind = item.attr.isDirectory ? 'dir' : 'file';
-      final meta = inferFileMeta(fullPath, kind);
-      return RemoteFileEntry(
-        kind: kind,
-        name: item.filename,
-        path: fullPath,
-        size: item.attr.size,
-        modifiedAt: _unixSecondsToDate(item.attr.modifyTime),
-        createdAt: _unixSecondsToDate(item.attr.accessTime),
-        previewKind: meta.previewKind,
-        typeLabel: meta.typeLabel,
-        language: meta.language,
-        iconName: meta.iconName,
+  Future<RemoteDirectory> listDirectory(String remotePath) async {
+    return _runSftpOperation((sftpClient) async {
+      final normalized = _normalizeRemoteDirectory(remotePath);
+      final stats = await sftpClient.stat(normalized);
+      if (!stats.isDirectory) {
+        throw StateError(SeilErrorCodes.directoryPathRequired);
+      }
+
+      final items = await sftpClient.listdir(normalized);
+      final entries = items
+          .where((item) => item.filename != '.' && item.filename != '..')
+          .map((item) {
+        final fullPath = p.posix.join(normalized, item.filename);
+        final kind = item.attr.isDirectory ? 'dir' : 'file';
+        final meta = inferFileMeta(fullPath, kind);
+        return RemoteFileEntry(
+          kind: kind,
+          name: item.filename,
+          path: fullPath,
+          size: item.attr.size,
+          modifiedAt: _unixSecondsToDate(item.attr.modifyTime),
+          createdAt: _unixSecondsToDate(item.attr.accessTime),
+          previewKind: meta.previewKind,
+          typeLabel: meta.typeLabel,
+          language: meta.language,
+          iconName: meta.iconName,
+        );
+      }).toList()
+        ..sort((left, right) {
+          if (left.isDirectory != right.isDirectory) {
+            return left.isDirectory ? -1 : 1;
+          }
+          return left.name.toLowerCase().compareTo(right.name.toLowerCase());
+        });
+
+      currentPath = normalized;
+      return RemoteDirectory(
+        currentPath: normalized,
+        parentPath: normalized == '/' ? null : p.posix.dirname(normalized),
+        entries: entries,
       );
-    }).toList()
-      ..sort((left, right) {
-        if (left.isDirectory != right.isDirectory) {
-          return left.isDirectory ? -1 : 1;
-        }
-        return left.name.toLowerCase().compareTo(right.name.toLowerCase());
-      });
-
-    currentPath = normalized;
-    return RemoteDirectory(
-      currentPath: normalized,
-      parentPath: normalized == '/' ? null : p.posix.dirname(normalized),
-      entries: entries,
-    );
+    });
   }
 
   Future<void> createDirectory(String parentPath, String name) async {
@@ -1046,14 +1082,15 @@ class LiveSshSession {
 
   Future<RemoteTextFile> readTextFile(String remotePath,
       {int maxBytes = maxPreviewBytes}) async {
-    final sftpClient = await sftp();
-    final stat = await sftpClient.stat(remotePath);
-    if ((stat.size ?? 0) > maxBytes) {
+    return _runSftpOperation((sftpClient) async {
+      final stat = await sftpClient.stat(remotePath);
+      if ((stat.size ?? 0) > maxBytes) {
+        final bytes = await _readFileBytes(sftpClient, remotePath, maxBytes);
+        return _mapTextFile(remotePath, bytes, stat, truncated: true);
+      }
       final bytes = await _readFileBytes(sftpClient, remotePath, maxBytes);
-      return _mapTextFile(remotePath, bytes, stat, truncated: true);
-    }
-    final bytes = await _readFileBytes(sftpClient, remotePath, maxBytes);
-    return _mapTextFile(remotePath, bytes, stat, truncated: false);
+      return _mapTextFile(remotePath, bytes, stat, truncated: false);
+    });
   }
 
   Future<void> writeTextFile(String remotePath, String content) async {
@@ -1071,8 +1108,10 @@ class LiveSshSession {
   }
 
   Future<Uint8List> downloadBytes(String remotePath) async {
-    final sftpClient = await sftp();
-    return _readFileBytes(sftpClient, remotePath, null);
+    return _runSftpOperation(
+      (sftpClient) => _readFileBytes(sftpClient, remotePath, null),
+      timeout: _sftpTransferTimeout,
+    );
   }
 
   Future<void> uploadBytes(

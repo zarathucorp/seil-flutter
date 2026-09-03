@@ -56,6 +56,7 @@ This repository follows a standard Flutter project layout.
 ```text
 lib/        Flutter application source
 android/    Android platform project
+macos/      macOS desktop platform project
 linux/      Linux desktop platform project
 web/        Web platform files
 assets/     Images, fonts, and file icons
@@ -131,6 +132,37 @@ The generated APK is usually located at:
 ```text
 build/app/outputs/flutter-apk/app-release.apk
 ```
+
+### Build a macOS DMG
+
+A Mac with Xcode and Flutter 3.44.6 or later is required for a local macOS build.
+
+```bash
+flutter doctor -v
+./scripts/build-macos-dmg.sh
+```
+
+The generated installer is placed at:
+
+```text
+release/macos/SEIL-v<version>-macos.dmg
+```
+
+Release builds are verified as universal binaries and run natively on both
+Apple Silicon and Intel Macs (macOS 10.15 or later).
+
+The unsigned DMG is suitable for local testing. For distribution to other Macs,
+sign and notarize it with an Apple Developer ID:
+
+```bash
+MACOS_SIGN_IDENTITY="Developer ID Application: Your Company (TEAMID)" \
+APPLE_NOTARY_KEYCHAIN_PROFILE="seil-notary" \
+./scripts/build-macos-dmg.sh
+```
+
+Without a Mac, run the **macOS DMG** workflow manually in GitHub Actions and
+download the SEIL-macOS-DMG artifact. That artifact is unsigned and intended
+for testing.
 
 ### Build a Google Play App Bundle
 

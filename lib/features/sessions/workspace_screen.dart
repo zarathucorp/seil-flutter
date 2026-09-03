@@ -147,9 +147,7 @@ class _WorkspaceCommandBar extends StatelessWidget {
       return const SizedBox.shrink();
     }
 
-    final tmuxLabel = active.tmuxAvailable
-        ? _compactPathDisplay(active.currentPath)
-        : _compactPathDisplay(active.currentPath);
+    final tmuxLabel = _compactPathDisplay(active.currentPath);
     return ClipRRect(
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
@@ -169,7 +167,9 @@ class _WorkspaceCommandBar extends StatelessWidget {
                     child: _HeaderSelectButton(
                       icon: LucideIcons.server,
                       title: active.displayName,
-                      statusColor: active.tmuxAvailable ? _success : _warning,
+                      statusColor: state.isSessionConnected(active)
+                          ? _success
+                          : _warning,
                       onPressed: () => _showServerSheet(context),
                     ),
                   ),
@@ -5369,6 +5369,11 @@ class _FilePreviewScreenState extends State<FilePreviewScreen> {
           ],
         ),
         actions: [
+          _ToolbarButton(
+            icon: LucideIcons.download,
+            tooltip: context.l10n.download,
+            onPressed: downloading ? null : () => unawaited(_download()),
+          ),
           if (editing)
             _ToolbarButton(
               icon: LucideIcons.save,

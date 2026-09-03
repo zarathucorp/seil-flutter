@@ -109,6 +109,10 @@ class AppState extends ChangeNotifier {
     return sessionPaneIndexes[terminalFrameKey(session)] ?? 0;
   }
 
+  bool isSessionConnected(LiveSshSession session) {
+    return !session.isClosed && !_disconnectedClients.contains(session.client);
+  }
+
   Future<void> initialize() async {
     terminalNotificationService.setLaunchTargetHandler(
       (target) => unawaited(focusTerminalNotificationTarget(target)),

@@ -59,6 +59,7 @@ app.*.map.json
 # Release artifacts are uploaded to distribution channels, not committed.
 /release/google/
 /release/github/
+/release/macos/
 
 # GitHub Actions release watcher state is restored from cache.
 /.github/state/

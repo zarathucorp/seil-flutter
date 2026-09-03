@@ -1,0 +1,53 @@
+name: macOS DMG
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - seil-update
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-dmg-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Flutter 3.44.6
+        run: |
+          git clone --depth 1 --branch 3.44.6 https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Configure Flutter
+        run: |
+          flutter config --no-analytics
+          flutter config --enable-macos-desktop
+          flutter precache --macos
+
+      - name: Analyze
+        run: |
+          flutter pub get
+          flutter analyze
+
+      - name: Test
+        run: flutter test
+
+      - name: Build unsigned test DMG
+        run: ./scripts/build-macos-dmg.sh
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v7
+        with:
+          name: SEIL-macOS-DMG
+          path: release/macos/*.dmg
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,46 @@
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:seil_mobile/core/platform/external_file_opener.dart';
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  const channel = MethodChannel('com.zarathu.seil/external_file');
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+
+  tearDown(() {
+    debugDefaultTargetPlatformOverride = null;
+    messenger.setMockMethodCallHandler(channel, null);
+  });
+
+  test('macOS forwards downloaded files to the native opener', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    MethodCall? receivedCall;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      receivedCall = call;
+      return null;
+    });
+
+    await const ExternalFileOpener().open('/tmp/report.csv');
+
+    expect(receivedCall?.method, 'open');
+    expect(receivedCall?.arguments, {'path': '/tmp/report.csv'});
+  });
+
+  test('unsupported platforms fail before invoking a native channel', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    var invoked = false;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      invoked = true;
+      return null;
+    });
+
+    await expectLater(
+      const ExternalFileOpener().open('/tmp/report.csv'),
+      throwsA(isA<UnsupportedError>()),
+    );
+    expect(invoked, isFalse);
+  });
+}

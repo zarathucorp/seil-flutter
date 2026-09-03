@@ -415,6 +415,13 @@ class SeilLocalizations {
         zh: '下载',
       );
 
+  String get tmuxUnavailable => _t(
+        en: 'tmux unavailable',
+        ko: 'tmux 사용 불가',
+        ja: 'tmux 利用不可',
+        zh: 'tmux 不可用',
+      );
+
   String get servers => _t(
         en: 'Servers',
         ko: '서버',
@@ -1420,6 +1427,15 @@ String seilLocalizedErrorMessage(String languageCode, Object error) {
       ko: '모바일 앱에서는 SSH Agent 인증을 지원하지 않습니다.',
       ja: 'モバイルアプリでは SSH Agent 認証に対応していません。',
       zh: '移动应用不支持 SSH Agent 认证。',
+    );
+  }
+  if (message == SeilErrorCodes.sftpOperationTimeout) {
+    return _localizedByCode(
+      languageCode,
+      en: 'The server did not respond to the file request. Try again after reconnecting.',
+      ko: '서버가 파일 요청에 응답하지 않았습니다. 재접속 후 다시 시도하세요.',
+      ja: 'サーバーがファイル要求に応答しませんでした。再接続後にもう一度お試しください。',
+      zh: '服务器未响应文件请求。请重新连接后重试。',
     );
   }
   if (message == SeilErrorCodes.directoryPathRequired ||

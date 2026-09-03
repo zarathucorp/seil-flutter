@@ -75,6 +75,7 @@ class ConnectionListScreen extends StatelessWidget {
                   _LiveSessionCard(
                     session: session,
                     number: state.sessionNumber(session),
+                    connected: state.isSessionConnected(session),
                     onPressed: () => state.selectSession(session),
                   ),
                 const SizedBox(height: 16),
@@ -203,11 +204,13 @@ class _LiveSessionCard extends StatelessWidget {
   const _LiveSessionCard({
     required this.session,
     required this.number,
+    required this.connected,
     required this.onPressed,
   });
 
   final LiveSshSession session;
   final int number;
+  final bool connected;
   final VoidCallback onPressed;
 
   @override
@@ -236,14 +239,15 @@ class _LiveSessionCard extends StatelessWidget {
                 right: -1,
                 bottom: -1,
                 child: _StatusLamp(
-                  color: session.tmuxAvailable ? _success : _warning,
+                  color: connected ? _success : _warning,
                 ),
               ),
             ],
           ),
           title: Text(session.displayName),
           subtitle: Text(
-            '${session.username}@${session.hostName} · ${_compactPathName(session.currentPath)}',
+            '${session.username}@${session.hostName} · ${_compactPathName(session.currentPath)}'
+            '${session.tmuxAvailable ? '' : ' · ${context.l10n.tmuxUnavailable}'}',
           ),
           trailing: const Icon(LucideIcons.chevronRight, size: 16),
           onTap: onPressed,
