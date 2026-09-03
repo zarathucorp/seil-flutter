@@ -56,6 +56,7 @@ class AppState extends ChangeNotifier {
   final Map<String, _CachedDirectory> _directoryCache = {};
   final Map<String, List<String>> _directoryBackStacks = {};
   final Map<String, String> _reconnectSecrets = {};
+  final Map<String, String> _reconnectPassphrases = {};
   LiveSshSession? activeSession;
   RemoteDirectory? activeDirectory;
   bool needsBootstrap = false;
@@ -270,6 +271,7 @@ class AppState extends ChangeNotifier {
   Future<void> logout() async {
     await _closeAllSessions();
     _reconnectSecrets.clear();
+    _reconnectPassphrases.clear();
     reconnectPolicy.clearAll();
     _stopBackgroundRetention();
     _reconnectRetryTimer?.cancel();
@@ -286,10 +288,17 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<bool> storedPrivateKeyNeedsPassphrase(
+    SavedConnection connection,
+  ) {
+    return connectionRepository.storedPrivateKeyNeedsPassphrase(connection);
+  }
+
   Future<void> deleteConnection(SavedConnection connection) async {
     await _run(() async {
       await connectionRepository.deleteConnection(connection.id);
       _reconnectSecrets.remove(connection.fingerprint);
+      _reconnectPassphrases.remove(connection.fingerprint);
       final sessionsToClose = liveSessions
           .where((session) =>
               session.connection.fingerprint == connection.fingerprint)
@@ -455,6 +464,7 @@ class AppState extends ChangeNotifier {
         await _connect(
           connection,
           transientSecret: input.secret,
+          transientPassphrase: input.passphrase,
           initialPaneIndex: initialPaneIndex,
         );
       } catch (error) {
@@ -469,6 +479,7 @@ class AppState extends ChangeNotifier {
 
   Future<void> connectSaved(SavedConnection connection,
       {String? transientSecret,
+      String? transientPassphrase,
       int initialPaneIndex = 0,
       bool reuseExisting = true}) async {
     connectingConnectionId = connection.id;
@@ -478,6 +489,7 @@ class AppState extends ChangeNotifier {
         try {
           await _connect(connection,
               transientSecret: transientSecret,
+              transientPassphrase: transientPassphrase,
               initialPaneIndex: initialPaneIndex,
               reuseExisting: reuseExisting);
         } catch (error) {
@@ -495,6 +507,7 @@ class AppState extends ChangeNotifier {
 
   Future<void> _connect(SavedConnection connection,
       {String? transientSecret,
+      String? transientPassphrase,
       int initialPaneIndex = 0,
       bool reuseExisting = true}) async {
     final existing = _findOpenSessionForConnection(connection);
@@ -520,15 +533,29 @@ class AppState extends ChangeNotifier {
 
     final secret =
         await connectionRepository.resolveSecret(connection, transientSecret);
+    final passphrase = connection.authMode == AuthMode.privateKey
+        ? await connectionRepository.resolvePassphrase(
+            connection,
+            transientPassphrase,
+          )
+        : null;
     if (connection.authMode != AuthMode.agent &&
         (secret == null || secret.isEmpty)) {
       throw StateError(SeilErrorCodes.missingSshSecret);
     }
     final session = await sshSessionService.connect(
-        connection: connection, secret: secret ?? '');
+      connection: connection,
+      secret: secret ?? '',
+      passphrase: passphrase,
+    );
     final directory = await session.listDirectory(session.homePath);
     if (secret != null && secret.isNotEmpty) {
       _reconnectSecrets[connection.fingerprint] = secret;
+    }
+    if (passphrase != null && passphrase.isNotEmpty) {
+      _reconnectPassphrases[connection.fingerprint] = passphrase;
+    } else {
+      _reconnectPassphrases.remove(connection.fingerprint);
     }
     reconnectPolicy.recordSuccess(connection.fingerprint);
     liveSessions.add(session);
@@ -1152,6 +1179,7 @@ class AppState extends ChangeNotifier {
     session.close(closeClient: closeClient);
     if (!_hasOtherSessionsForConnection(session.connection)) {
       _reconnectSecrets.remove(session.connection.fingerprint);
+      _reconnectPassphrases.remove(session.connection.fingerprint);
       reconnectPolicy.clear(session.connection.fingerprint);
     }
     if (liveSessions.isEmpty) {
@@ -2251,6 +2279,12 @@ class AppState extends ChangeNotifier {
       oldSession.connection,
       _reconnectSecrets[oldSession.connection.fingerprint],
     );
+    final passphrase = oldSession.connection.authMode == AuthMode.privateKey
+        ? await connectionRepository.resolvePassphrase(
+            oldSession.connection,
+            _reconnectPassphrases[oldSession.connection.fingerprint],
+          )
+        : null;
     if (oldSession.connection.authMode != AuthMode.agent &&
         (secret == null || secret.isEmpty)) {
       throw StateError(SeilErrorCodes.missingSshSecret);
@@ -2259,9 +2293,15 @@ class AppState extends ChangeNotifier {
     final session = await sshSessionService.connect(
       connection: oldSession.connection,
       secret: secret ?? '',
+      passphrase: passphrase,
     );
     if (secret != null && secret.isNotEmpty) {
       _reconnectSecrets[oldSession.connection.fingerprint] = secret;
+    }
+    if (passphrase != null && passphrase.isNotEmpty) {
+      _reconnectPassphrases[oldSession.connection.fingerprint] = passphrase;
+    } else {
+      _reconnectPassphrases.remove(oldSession.connection.fingerprint);
     }
     return session;
   }
@@ -2316,6 +2356,7 @@ class AppState extends ChangeNotifier {
     _terminalFrames.clear();
     _directoryCache.clear();
     _reconnectSecrets.clear();
+    _reconnectPassphrases.clear();
     _disconnectedClients.clear();
     reconnectPolicy.clearAll();
     final closedClients = <Object>[];

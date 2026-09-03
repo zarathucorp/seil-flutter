@@ -61,8 +61,8 @@ if [[ -n "${MACOS_SIGN_IDENTITY:-}" ]]; then
     --timestamp \
     --sign "$MACOS_SIGN_IDENTITY" \
     "$app_path"
-  codesign --verify --deep --strict --verbose=2 "$app_path"
 fi
+codesign --verify --deep --strict --verbose=2 "$app_path"
 
 staging_dir="$(mktemp -d "${TMPDIR:-/tmp}/seil-dmg.XXXXXX")"
 cleanup() {
@@ -79,6 +79,7 @@ hdiutil create \
   -ov \
   -format UDZO \
   "$dmg_path"
+hdiutil verify "$dmg_path"
 
 if [[ -n "${MACOS_SIGN_IDENTITY:-}" ]]; then
   codesign --force --timestamp --sign "$MACOS_SIGN_IDENTITY" "$dmg_path"

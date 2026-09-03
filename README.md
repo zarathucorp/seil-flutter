@@ -164,6 +164,13 @@ Without a Mac, run the **macOS DMG** workflow manually in GitHub Actions and
 download the SEIL-macOS-DMG artifact. That artifact is unsigned and intended
 for testing.
 
+If macOS blocks the unsigned test app, try opening it once, then go to
+**System Settings > Privacy & Security > Security** and choose **Open Anyway**.
+
+For SSH private-key authentication, paste the private key and enter its
+passphrase in the separate optional field. A passphrase is required only for
+an encrypted private key; it is different from the SSH account password.
+
 ### Build a Google Play App Bundle
 
 Closed testing on Google Play should use a release-signed Android App Bundle. Release builds intentionally fail when `android/key.properties` is missing so a debug-signed artifact is not uploaded by mistake.

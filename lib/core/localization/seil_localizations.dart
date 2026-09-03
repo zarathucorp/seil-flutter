@@ -828,6 +828,13 @@ class SeilLocalizations {
         zh: 'Private Key 原文',
       );
 
+  String get privateKeyPassphrase => _t(
+        en: 'Private key passphrase (optional)',
+        ko: '개인 키 passphrase (선택)',
+        ja: '秘密鍵のパスフレーズ（任意）',
+        zh: '私钥密码短语（可选）',
+      );
+
   String get saveSecretOnDevice => _t(
         en: 'Save secret on this device',
         ko: '기기에 secret 저장',
@@ -1417,6 +1424,15 @@ String seilLocalizedErrorMessage(String languageCode, Object error) {
       ko: '저장된 SSH secret이 없어 다시 입력이 필요합니다.',
       ja: '保存された SSH secret がありません。再接続するには再入力してください。',
       zh: '缺少已保存的 SSH secret。请重新输入后再连接。',
+    );
+  }
+  if (message == SeilErrorCodes.privateKeyPassphraseRequired) {
+    return _localizedByCode(
+      languageCode,
+      en: 'This private key is encrypted. Enter its passphrase.',
+      ko: '암호화된 개인 키입니다. 개인 키 passphrase를 입력하세요.',
+      ja: 'この秘密鍵は暗号化されています。パスフレーズを入力してください。',
+      zh: '此私钥已加密。请输入私钥密码短语。',
     );
   }
   if (message == SeilErrorCodes.sshAgentUnsupported ||

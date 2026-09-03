@@ -783,15 +783,27 @@ class _WorkspaceCommandBar extends StatelessWidget {
     SavedConnection connection,
   ) async {
     String? secret;
+    String? passphrase;
     if (!connection.hasStoredSecret) {
-      secret = await _askSecret(context, connection.authMode);
-      if (secret == null || secret.isEmpty) {
+      final credentials = await _askSecret(context, connection.authMode);
+      if (credentials == null || credentials.secret.isEmpty) {
+        return null;
+      }
+      secret = credentials.secret;
+      passphrase = credentials.passphrase;
+    } else if (await state.storedPrivateKeyNeedsPassphrase(connection)) {
+      if (!context.mounted) {
+        return null;
+      }
+      passphrase = await _askPassphrase(context);
+      if (passphrase == null || passphrase.isEmpty) {
         return null;
       }
     }
     await state.connectSaved(
       connection,
       transientSecret: secret,
+      transientPassphrase: passphrase,
       reuseExisting: true,
     );
     if (state.errorMessage != null || state.activeSession == null) {
@@ -800,20 +812,90 @@ class _WorkspaceCommandBar extends StatelessWidget {
     return state.activeSession;
   }
 
-  Future<String?> _askSecret(BuildContext context, AuthMode authMode) {
+  Future<({String secret, String? passphrase})?> _askSecret(
+    BuildContext context,
+    AuthMode authMode,
+  ) async {
     final controller = TextEditingController();
-    return showDialog<String>(
+    final passphraseController = TextEditingController();
+    final result = await showDialog<({String secret, String? passphrase})>(
       context: context,
       builder: (context) => AlertDialog(
+        scrollable: true,
         title: Text(authMode == AuthMode.password
             ? context.l10n.sshPassword
             : 'Private Key'),
+        content: authMode == AuthMode.password
+            ? TextField(
+                controller: controller,
+                obscureText: true,
+                autofocus: true,
+                decoration:
+                    InputDecoration(labelText: context.l10n.sshPassword),
+              )
+            : Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: controller,
+                    minLines: 6,
+                    maxLines: 10,
+                    autofocus: true,
+                    decoration:
+                        InputDecoration(labelText: context.l10n.privateKeyRaw),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: passphraseController,
+                    obscureText: true,
+                    enableSuggestions: false,
+                    autocorrect: false,
+                    decoration: InputDecoration(
+                      labelText: context.l10n.privateKeyPassphrase,
+                    ),
+                  ),
+                ],
+              ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(context.l10n.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(
+              context,
+              (
+                secret: controller.text,
+                passphrase: authMode == AuthMode.privateKey
+                    ? passphraseController.text
+                    : null,
+              ),
+            ),
+            child: Text(context.l10n.connect),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    passphraseController.dispose();
+    return result;
+  }
+
+  Future<String?> _askPassphrase(BuildContext context) async {
+    final controller = TextEditingController();
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(context.l10n.privateKeyPassphrase),
         content: TextField(
           controller: controller,
-          minLines: authMode == AuthMode.privateKey ? 6 : 1,
-          maxLines: authMode == AuthMode.privateKey ? 10 : 1,
-          obscureText: authMode == AuthMode.password,
-          decoration: InputDecoration(labelText: context.l10n.secret),
+          obscureText: true,
+          enableSuggestions: false,
+          autocorrect: false,
+          autofocus: true,
+          decoration: InputDecoration(
+            labelText: context.l10n.privateKeyPassphrase,
+          ),
         ),
         actions: [
           TextButton(
@@ -827,6 +909,8 @@ class _WorkspaceCommandBar extends StatelessWidget {
         ],
       ),
     );
+    controller.dispose();
+    return result;
   }
 }
 

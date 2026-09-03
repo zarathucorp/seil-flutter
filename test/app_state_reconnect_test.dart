@@ -113,6 +113,42 @@ void main() {
     expect(state.activeDirectory?.currentPath, '/work/current');
     expect(state.reconnectPolicy.failureFor(connection.fingerprint), isNull);
   });
+
+  test('reconnect forwards the private key passphrase', () async {
+    final connection = _connection(authMode: AuthMode.privateKey);
+    final oldSession = _FakeLiveSshSession(
+      id: 'old-private-key',
+      client: _FakeSshClient(),
+      connection: connection,
+      currentPath: '/work/private-key',
+    );
+    final replacement = _FakeLiveSshSession(
+      id: 'replacement-private-key',
+      client: _FakeSshClient(),
+      connection: connection,
+      currentPath: '/work/private-key',
+    );
+    final sshSessionService = _FakeSshSessionService(replacement);
+    final state = _appState(
+      connectionRepository: _FakeConnectionRepository(
+        secret: 'encrypted-private-key',
+        passphrase: 'key-passphrase',
+      ),
+      sshSessionService: sshSessionService,
+    )
+      ..currentUser = _user()
+      ..liveSessions = [oldSession]
+      ..activeSession = oldSession;
+    state.sessionDirectories[state.terminalFrameKey(oldSession)] =
+        _directory('/work/private-key');
+    state.activeDirectory =
+        state.sessionDirectories[state.terminalFrameKey(oldSession)];
+
+    await state.reconnectActiveWorkspace();
+
+    expect(sshSessionService.lastSecret, 'encrypted-private-key');
+    expect(sshSessionService.lastPassphrase, 'key-passphrase');
+  });
 }
 
 AppState _appState({
@@ -128,7 +164,7 @@ AppState _appState({
   );
 }
 
-SavedConnection _connection() {
+SavedConnection _connection({AuthMode authMode = AuthMode.password}) {
   final now = DateTime.utc(2026, 5, 26);
   return SavedConnection(
     id: 'connection-a',
@@ -136,7 +172,7 @@ SavedConnection _connection() {
     host: 'server.example',
     port: 22,
     username: 'seil',
-    authMode: AuthMode.password,
+    authMode: authMode,
     tmuxHistoryLimit: 2000,
     fingerprint: 'fingerprint-a',
     hasStoredSecret: true,
@@ -170,13 +206,18 @@ class _FakeSshSessionService implements SshSessionService {
 
   final LiveSshSession replacement;
   int connectCount = 0;
+  String? lastSecret;
+  String? lastPassphrase;
 
   @override
   Future<LiveSshSession> connect({
     required SavedConnection connection,
     required String secret,
+    String? passphrase,
   }) async {
     connectCount += 1;
+    lastSecret = secret;
+    lastPassphrase = passphrase;
     return replacement;
   }
 }
@@ -243,14 +284,26 @@ class _FakeSshClient extends Fake implements SSHClient {
 }
 
 class _FakeConnectionRepository extends Fake implements ConnectionRepository {
-  _FakeConnectionRepository({required this.secret});
+  _FakeConnectionRepository({
+    required this.secret,
+    this.passphrase,
+  });
 
   final String secret;
+  final String? passphrase;
 
   @override
   Future<String?> resolveSecret(SavedConnection connection,
       [String? transientSecret]) async {
     return transientSecret?.isNotEmpty == true ? transientSecret : secret;
+  }
+
+  @override
+  Future<String?> resolvePassphrase(
+    SavedConnection connection, [
+    String? transientPassphrase,
+  ]) async {
+    return transientPassphrase ?? passphrase;
   }
 }
 

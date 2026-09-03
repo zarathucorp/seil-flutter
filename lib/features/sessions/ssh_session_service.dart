@@ -40,6 +40,7 @@ abstract class SshSessionService {
   Future<LiveSshSession> connect({
     required SavedConnection connection,
     required String secret,
+    String? passphrase,
   });
 }
 
@@ -48,11 +49,15 @@ class DartSshSessionService implements SshSessionService {
   Future<LiveSshSession> connect({
     required SavedConnection connection,
     required String secret,
+    String? passphrase,
   }) async {
     if (connection.authMode == AuthMode.agent) {
       throw StateError(SeilErrorCodes.sshAgentUnsupported);
     }
 
+    final identities = connection.authMode == AuthMode.privateKey
+        ? parseSshPrivateKey(secret, passphrase)
+        : null;
     late final SSHSocket socket;
     try {
       socket = await SSHSocket.connect(
@@ -69,9 +74,7 @@ class DartSshSessionService implements SshSessionService {
       keepAliveInterval: const Duration(seconds: 10),
       onPasswordRequest:
           connection.authMode == AuthMode.password ? () => secret : null,
-      identities: connection.authMode == AuthMode.privateKey
-          ? SSHKeyPair.fromPem(secret)
-          : null,
+      identities: identities,
     );
     final session = LiveSshSession._(
       client: client,
@@ -90,6 +93,15 @@ class DartSshSessionService implements SshSessionService {
     }
     return session;
   }
+}
+
+List<SSHKeyPair> parseSshPrivateKey(String privateKey, String? passphrase) {
+  final effectivePassphrase =
+      passphrase == null || passphrase.isEmpty ? null : passphrase;
+  if (SSHKeyPair.isEncryptedPem(privateKey) && effectivePassphrase == null) {
+    throw StateError(SeilErrorCodes.privateKeyPassphraseRequired);
+  }
+  return SSHKeyPair.fromPem(privateKey, effectivePassphrase);
 }
 
 class LiveSshSession {
