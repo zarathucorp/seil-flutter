@@ -16,6 +16,7 @@ import 'package:shadcn_ui/shadcn_ui.dart';
 import '../../core/build_config.dart';
 import '../../core/localization/seil_error_codes.dart';
 import '../../core/localization/seil_localizations.dart';
+import '../../core/platform/download_saver.dart';
 import '../../core/platform/external_file_opener.dart';
 import '../../shared/app_state.dart';
 import '../../shared/models.dart';
@@ -42,6 +43,21 @@ const _terminalMutedForeground = Color(0xFFA1A1AA);
 const _terminalBottomPaddingLines = '\n\n\n\n';
 const _terminalAutoScrollBottomTolerance = 24.0;
 const tmuxBackgroundRefreshInterval = Duration(seconds: 2);
+
+double tmuxTabWidthForLabel(String label) {
+  final painter = TextPainter(
+    text: TextSpan(
+      text: label,
+      style: const TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w800,
+      ),
+    ),
+    maxLines: 1,
+    textDirection: TextDirection.ltr,
+  )..layout();
+  return (painter.width + 16).clamp(32.0, 168.0).toDouble();
+}
 
 class _WorkspacePerformance extends InheritedWidget {
   const _WorkspacePerformance({
@@ -1088,7 +1104,9 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
     _scheduleDefaultNameCleanup(active, redundantDefaultNames);
     final tabWidthsByName = <String, double>{
       for (final session in sessions)
-        session.name: customNamesByName[session.name] == null ? 32 : 104,
+        session.name: tmuxTabWidthForLabel(
+          customNamesByName[session.name] ?? labelsByName[session.name] ?? '',
+        ),
     };
     return SizedBox(
       height: 32,
@@ -5679,7 +5697,7 @@ class _FilePreviewScreenState extends State<FilePreviewScreen> {
     final downloadedMessage = context.l10n.fileDownloaded;
     try {
       final bytes = await widget.session.downloadBytes(widget.entry.path);
-      final savedPath = await FilePicker.platform.saveFile(
+      final savedPath = await const DownloadSaver().save(
         dialogTitle: downloadTitle,
         fileName: widget.entry.name,
         bytes: bytes,

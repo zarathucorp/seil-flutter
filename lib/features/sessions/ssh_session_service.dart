@@ -33,7 +33,7 @@ String buildTmuxSessionStatusCommand() {
     'printf "\\n$_tmuxPanePathMarker\\n"',
     'tmux list-panes -a -F "P$_tmuxDelimiter#{session_name}$_tmuxDelimiter#{pane_active}$_tmuxDelimiter#{pane_current_path}$_tmuxDelimiter#{pane_current_command}$_tmuxDelimiter#{pane_id}$_tmuxDelimiter#{pane_title}" 2>/dev/null || true',
     'printf "\\n$_tmuxPaneTailMarker\\n"',
-    'tmux list-panes -a -F "T$_tmuxDelimiter#{session_name}$_tmuxDelimiter#{pane_active}$_tmuxDelimiter#{pane_id}" 2>/dev/null | while IFS= read -r line; do session_name=\$(printf "%s" "\$line" | cut -d "|" -f 4); pane_active=\$(printf "%s" "\$line" | cut -d "|" -f 7); pane_id=\$(printf "%s" "\$line" | cut -d "|" -f 10); if [ "\$pane_active" = "1" ] && [ -n "\$pane_id" ]; then printf "T$_tmuxDelimiter%s$_tmuxDelimiter%s\\n" "\$session_name" "\$pane_id"; tmux capture-pane -t "\$pane_id" -p -S -10 2>/dev/null | sed "s/^/R$_tmuxDelimiter/"; printf "E$_tmuxDelimiter%s\\n" "\$session_name"; fi; done',
+    'tmux list-panes -a -F "T$_tmuxDelimiter#{session_name}$_tmuxDelimiter#{pane_active}$_tmuxDelimiter#{pane_id}" 2>/dev/null | while IFS="|" read -r marker d1 d2 session_name d3 d4 pane_active d5 d6 pane_id; do if [ "\$pane_active" = "1" ] && [ -n "\$pane_id" ]; then printf "T$_tmuxDelimiter%s$_tmuxDelimiter%s\\n" "\$session_name" "\$pane_id"; tmux capture-pane -t "\$pane_id" -p -S -10 2>/dev/null | sed "s/^/R$_tmuxDelimiter/"; printf "E$_tmuxDelimiter%s\\n" "\$session_name"; fi; done',
   ].join('; ');
 }
 
@@ -84,10 +84,13 @@ class DartSshSessionService implements SshSessionService {
       identities: identities,
     );
     final commandQueue = SshCommandQueue();
+    final interactiveCommandQueue =
+        seilLegacySharedSshQueue ? commandQueue : SshCommandQueue();
     final session = LiveSshSession._(
       client: client,
       connection: connection,
       commandQueue: commandQueue,
+      interactiveCommandQueue: interactiveCommandQueue,
       monitorCommandQueue:
           seilLegacySharedSshQueue ? commandQueue : SshCommandQueue(),
     );
@@ -138,9 +141,11 @@ class LiveSshSession {
     required this.client,
     required this.connection,
     required SshCommandQueue commandQueue,
+    required SshCommandQueue interactiveCommandQueue,
     required SshCommandQueue monitorCommandQueue,
   })  : id = const Uuid().v4(),
         _commandQueue = commandQueue,
+        _interactiveCommandQueue = interactiveCommandQueue,
         _monitorCommandQueue = monitorCommandQueue;
 
   LiveSshSession.testing({
@@ -149,12 +154,14 @@ class LiveSshSession {
     String? id,
   })  : id = id ?? const Uuid().v4(),
         _commandQueue = SshCommandQueue(),
+        _interactiveCommandQueue = SshCommandQueue(),
         _monitorCommandQueue = SshCommandQueue();
 
   final String id;
   final SSHClient client;
   final SavedConnection connection;
   final SshCommandQueue _commandQueue;
+  final SshCommandQueue _interactiveCommandQueue;
   final SshCommandQueue _monitorCommandQueue;
   late final String hostName;
   late final String homePath;
@@ -226,7 +233,10 @@ class LiveSshSession {
     SshCommandPriority priority = SshCommandPriority.foreground,
     String? coalescingKey,
   }) async {
-    return _commandQueue.run(
+    final queue = priority == SshCommandPriority.interactive
+        ? _interactiveCommandQueue
+        : _commandQueue;
+    return queue.run(
       () => _executeCommand(command),
       priority: priority,
       coalescingKey: coalescingKey,
@@ -253,7 +263,10 @@ class LiveSshSession {
     SshCommandPriority priority = SshCommandPriority.foreground,
     String? coalescingKey,
   }) async {
-    return _commandQueue.run(
+    final queue = priority == SshCommandPriority.interactive
+        ? _interactiveCommandQueue
+        : _commandQueue;
+    return queue.run(
       () async {
         if (client.isClosed) {
           throw StateError(_sshClosedMessage);
@@ -1001,6 +1014,7 @@ class LiveSshSession {
       client: client,
       connection: connection,
       commandQueue: _commandQueue,
+      interactiveCommandQueue: _interactiveCommandQueue,
       monitorCommandQueue: _monitorCommandQueue,
     );
     session.hostName = hostName;

@@ -15,6 +15,19 @@ void main() {
     expect(command, contains('capture-pane'));
     expect(command, contains('-S -10'));
     expect(command, isNot(contains('-S -30')));
+    expect(command, contains('while IFS="|" read -r'));
+    expect(command, isNot(contains(' cut ')));
+  });
+
+  test('tmux tab width follows the current label length', () {
+    final shortWidth = tmuxTabWidthForLabel('뭐');
+    final mediumWidth = tmuxTabWidthForLabel('안녕하세요');
+    final longWidth = tmuxTabWidthForLabel('래래래래래래래래래래래래');
+
+    expect(shortWidth, lessThan(mediumWidth));
+    expect(mediumWidth, lessThan(longWidth));
+    expect(tmuxTabWidthForLabel('뭐'), shortWidth);
+    expect(longWidth, lessThanOrEqualTo(168));
   });
 
   test('background tmux status refresh remains fixed at two seconds', () {
@@ -102,6 +115,34 @@ void main() {
 
     releaseMonitor.complete();
     await monitorWork;
+  });
+
+  test('foreground capture work cannot block the dedicated input queue',
+      () async {
+    final foregroundQueue = SshCommandQueue();
+    final interactiveQueue = SshCommandQueue();
+    final foregroundStarted = Completer<void>();
+    final releaseForeground = Completer<void>();
+    var foregroundFinished = false;
+
+    final foregroundWork = foregroundQueue.run(() async {
+      foregroundStarted.complete();
+      await releaseForeground.future;
+      foregroundFinished = true;
+      return 'capture';
+    });
+
+    await foregroundStarted.future;
+    final inputResult = await interactiveQueue.run(
+      () async => 'input',
+      priority: SshCommandPriority.interactive,
+    );
+
+    expect(inputResult, 'input');
+    expect(foregroundFinished, isFalse);
+
+    releaseForeground.complete();
+    await foregroundWork;
   });
 
   test('commands with the same coalescing key share one execution', () async {
