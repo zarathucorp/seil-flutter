@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
+import 'core/build_config.dart';
 import 'core/localization/seil_localizations.dart';
 import 'core/settings/app_settings_repository.dart';
 import 'core/storage/local_database.dart';
@@ -97,7 +98,7 @@ class _SeilMobileAppState extends State<SeilMobileApp>
       appBuilder: (context) {
         Widget buildMaterialApp() {
           return MaterialApp(
-            title: 'Seil',
+            title: seilAppTitle,
             debugShowCheckedModeBanner: false,
             theme: buildSeilTheme(),
             locale:
@@ -111,11 +112,22 @@ class _SeilMobileAppState extends State<SeilMobileApp>
               GlobalShadLocalizations.delegate,
             ],
             home: _buildHome(),
-            builder: (context, child) => ShadAppBuilder(
-              child: ready
+            builder: (context, child) {
+              Widget content = ready
                   ? _AppErrorNotifier(state: state, child: child!)
-                  : child!,
-            ),
+                  : child!;
+              if (seilPerformanceTestLabel.isNotEmpty) {
+                content = Banner(
+                  message: seilPerformanceTestLabel,
+                  location: BannerLocation.topEnd,
+                  color: seilLegacySharedSshQueue
+                      ? const Color(0xFFB3261E)
+                      : const Color(0xFF146C2E),
+                  child: content,
+                );
+              }
+              return ShadAppBuilder(child: content);
+            },
           );
         }
 

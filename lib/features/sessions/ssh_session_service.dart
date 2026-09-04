@@ -6,6 +6,7 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 
+import '../../core/build_config.dart';
 import '../../core/localization/seil_error_codes.dart';
 import '../../shared/models.dart';
 import '../files/file_meta.dart';
@@ -82,11 +83,13 @@ class DartSshSessionService implements SshSessionService {
           : null,
       identities: identities,
     );
+    final commandQueue = SshCommandQueue();
     final session = LiveSshSession._(
       client: client,
       connection: connection,
-      commandQueue: SshCommandQueue(),
-      monitorCommandQueue: SshCommandQueue(),
+      commandQueue: commandQueue,
+      monitorCommandQueue:
+          seilLegacySharedSshQueue ? commandQueue : SshCommandQueue(),
     );
     try {
       await session.initialize().timeout(_sshConnectTimeout);

@@ -13,6 +13,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
+import '../../core/build_config.dart';
 import '../../core/localization/seil_error_codes.dart';
 import '../../core/localization/seil_localizations.dart';
 import '../../core/platform/external_file_opener.dart';
@@ -2300,6 +2301,7 @@ class _TerminalPaneState extends State<TerminalPane> {
   final viewNotifier = ValueNotifier<_TerminalViewData>(
     const _TerminalViewData(frame: _emptyTerminalFrame, error: null),
   );
+  final ListQueue<int> latencySamples = ListQueue<int>();
   final StringBuffer queuedLiteralInput = StringBuffer();
   Timer? pollTimer;
   Timer? literalInputTimer;
@@ -2409,6 +2411,7 @@ class _TerminalPaneState extends State<TerminalPane> {
     localError = null;
     extraScrollbackLines = 0;
     historyExhausted = false;
+    latencySamples.clear();
     pollIntervalMs = _minPollIntervalMs;
     jumpToBottomAfterNextPoll = true;
     _terminalDiff.reset();
@@ -2461,6 +2464,7 @@ class _TerminalPaneState extends State<TerminalPane> {
           _currentFrameKey() != liveFrameKey) {
         return;
       }
+      _recordLatency(latency);
       _updateHistoryExhaustion(
         nextContent: next.content,
         requestedScrollbackLines: requestedScrollbackLines,
@@ -2576,6 +2580,37 @@ class _TerminalPaneState extends State<TerminalPane> {
                     onPressed: _deleteCurrentTmuxSession,
                   ),
                 ),
+                if (seilPerformanceTestLabel.isNotEmpty)
+                  Positioned(
+                    top: 8,
+                    left: 10,
+                    child: ValueListenableBuilder<_TerminalViewData>(
+                      valueListenable: viewNotifier,
+                      builder: (context, view, _) => DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: const Color(0xE6111827),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0x6673D0FF)),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 9,
+                            vertical: 6,
+                          ),
+                          child: Text(
+                            'REFRESH ${view.frame.latencyMs} ms  '
+                            'P95 ${_latencyP95Ms()} ms',
+                            style: const TextStyle(
+                              color: Color(0xFFE5E7EB),
+                              fontFamily: _terminalFontFamily,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -2592,6 +2627,22 @@ class _TerminalPaneState extends State<TerminalPane> {
         ],
       ),
     );
+  }
+
+  void _recordLatency(int latencyMs) {
+    latencySamples.addLast(latencyMs);
+    while (latencySamples.length > 100) {
+      latencySamples.removeFirst();
+    }
+  }
+
+  int _latencyP95Ms() {
+    if (latencySamples.isEmpty) {
+      return 0;
+    }
+    final sorted = latencySamples.toList()..sort();
+    final index = (sorted.length * .95).ceil() - 1;
+    return sorted[index.clamp(0, sorted.length - 1)];
   }
 
   int _nextPollInterval(_TerminalDiffResult diff, bool metadataChanged) {

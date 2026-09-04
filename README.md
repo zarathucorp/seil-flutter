@@ -164,6 +164,18 @@ Without a Mac, run the **macOS DMG** workflow manually in GitHub Actions and
 download the SEIL-macOS-DMG artifact. That artifact is unsigned and intended
 for testing.
 
+To compare SSH responsiveness under tmux load, run the **macOS Performance
+Comparison** workflow and download its artifact. It contains two independently
+installable apps built from the same source:
+
+- `SEIL Previous Test` uses the previous shared SSH command queue.
+- `SEIL Current Test` uses the isolated monitor queue.
+
+Each test app shows its mode in a corner banner and displays the current
+terminal refresh latency plus the rolling p95 latency. Connect both apps to the
+same host, use the same tmux workload, and compare p95 after at least one
+minute. Quit one test app before measuring the other.
+
 If macOS blocks the unsigned test app, try opening it once, then go to
 **System Settings > Privacy & Security > Security** and choose **Open Anyway**.
 
