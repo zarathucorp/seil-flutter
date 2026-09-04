@@ -20,13 +20,16 @@ void main() {
   });
 
   test('tmux tab width follows the current label length', () {
-    final shortWidth = tmuxTabWidthForLabel('뭐');
+    final shortWidth = tmuxTabWidthForLabel('흥');
+    final expandedWidth = tmuxTabWidthForLabel('흥칫뿡');
     final mediumWidth = tmuxTabWidthForLabel('안녕하세요');
     final longWidth = tmuxTabWidthForLabel('래래래래래래래래래래래래');
 
+    expect(shortWidth, lessThan(expandedWidth));
+    expect(expandedWidth, lessThan(mediumWidth));
     expect(shortWidth, lessThan(mediumWidth));
     expect(mediumWidth, lessThan(longWidth));
-    expect(tmuxTabWidthForLabel('뭐'), shortWidth);
+    expect(tmuxTabWidthForLabel('흥'), shortWidth);
     expect(longWidth, lessThanOrEqualTo(168));
   });
 

@@ -1156,13 +1156,15 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
                     final customName = customNamesByName[session.name];
                     final defaultLabel =
                         labelsByName[session.name] ?? (index + 1).toString();
+                    final label = customName ?? defaultLabel;
                     return Padding(
                       key: ValueKey(session.name),
                       padding: const EdgeInsets.only(right: 5),
                       child: _TmuxTabReorderDragStartListener(
                         index: index,
                         child: _SessionNumberButton(
-                          label: customName ?? defaultLabel,
+                          key: ValueKey('${session.name}\u0000$label'),
+                          label: label,
                           width: tabWidthsByName[session.name] ?? 32,
                           selected: selected,
                           attentionState: session.attentionState,
@@ -1373,6 +1375,7 @@ class _TmuxTabReorderDragStartListener extends ReorderableDragStartListener {
 
 class _SessionNumberButton extends StatefulWidget {
   const _SessionNumberButton({
+    super.key,
     required this.label,
     required this.width,
     required this.selected,
