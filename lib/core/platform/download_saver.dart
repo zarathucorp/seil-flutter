@@ -2,9 +2,16 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
+
+typedef DownloadsDirectoryProvider = Future<Directory?> Function();
 
 class DownloadSaver {
-  const DownloadSaver();
+  DownloadSaver({DownloadsDirectoryProvider? downloadsDirectoryProvider})
+      : _downloadsDirectoryProvider =
+            downloadsDirectoryProvider ?? getDownloadsDirectory;
+
+  final DownloadsDirectoryProvider _downloadsDirectoryProvider;
 
   Future<String?> save({
     required String dialogTitle,
@@ -17,9 +24,16 @@ class DownloadSaver {
             defaultTargetPlatform == TargetPlatform.linux);
 
     if (isDesktop) {
+      Directory? downloadsDirectory;
+      try {
+        downloadsDirectory = await _downloadsDirectoryProvider();
+      } on UnsupportedError {
+        downloadsDirectory = null;
+      }
       final savedPath = await FilePicker.platform.saveFile(
         dialogTitle: dialogTitle,
         fileName: fileName,
+        initialDirectory: downloadsDirectory?.path,
       );
       if (savedPath == null) {
         return null;

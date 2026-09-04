@@ -10,6 +10,7 @@ class _FakeFilePicker extends FilePicker {
 
   final String? savedPath;
   Uint8List? receivedBytes;
+  String? receivedInitialDirectory;
 
   @override
   Future<String?> saveFile({
@@ -22,6 +23,7 @@ class _FakeFilePicker extends FilePicker {
     bool lockParentWindow = false,
   }) async {
     receivedBytes = bytes;
+    receivedInitialDirectory = initialDirectory;
     return savedPath;
   }
 }
@@ -41,7 +43,9 @@ void main() {
       FilePicker.platform = picker;
       final expected = Uint8List.fromList([83, 69, 73, 76]);
 
-      final result = await const DownloadSaver().save(
+      final result = await DownloadSaver(
+        downloadsDirectoryProvider: () async => directory,
+      ).save(
         dialogTitle: 'Download',
         fileName: fileName,
         bytes: expected,
@@ -49,6 +53,7 @@ void main() {
 
       expect(result, savedPath);
       expect(picker.receivedBytes, isNull);
+      expect(picker.receivedInitialDirectory, directory.path);
       expect(await File(savedPath).readAsBytes(), expected);
     });
   }
@@ -58,7 +63,9 @@ void main() {
     final picker = _FakeFilePicker(null);
     FilePicker.platform = picker;
 
-    final result = await const DownloadSaver().save(
+    final result = await DownloadSaver(
+      downloadsDirectoryProvider: () async => null,
+    ).save(
       dialogTitle: 'Download',
       fileName: 'cancelled.R',
       bytes: Uint8List.fromList([1, 2, 3]),

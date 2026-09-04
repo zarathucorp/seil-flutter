@@ -5700,14 +5700,22 @@ class _FilePreviewScreenState extends State<FilePreviewScreen> {
     final downloadedMessage = context.l10n.fileDownloaded;
     try {
       final bytes = await widget.session.downloadBytes(widget.entry.path);
-      final savedPath = await const DownloadSaver().save(
+      final savedPath = await DownloadSaver().save(
         dialogTitle: downloadTitle,
         fileName: widget.entry.name,
         bytes: bytes,
       );
       if (savedPath != null && mounted) {
+        try {
+          await const ExternalFileOpener().reveal(savedPath);
+        } catch (_) {
+          // The file is already saved; revealing it is only a convenience.
+        }
+        if (!mounted) {
+          return;
+        }
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(downloadedMessage)),
+          SnackBar(content: Text('$downloadedMessage\n$savedPath')),
         );
       }
     } catch (error) {

@@ -1,0 +1,164 @@
+name: All platform apps
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - seil-update
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: all-platforms-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Flutter 3.44.6
+        run: |
+          git clone --depth 1 --branch 3.44.6 https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+      - name: Analyze and test
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+
+  android:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - name: Install Flutter 3.44.6
+        run: |
+          git clone --depth 1 --branch 3.44.6 https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+      - name: Build APK
+        run: |
+          flutter config --no-analytics
+          flutter precache --android
+          flutter pub get
+          flutter build apk --debug
+          version="$(sed -nE 's/^version:[[:space:]]*([^+[:space:]]+).*/\1/p' pubspec.yaml)"
+          mkdir -p release/android
+          cp build/app/outputs/flutter-apk/app-debug.apk "release/android/SEIL-v${version}-android.apk"
+      - name: Upload Android build
+        uses: actions/upload-artifact@v7
+        with:
+          name: seil-build-android
+          path: release/android/*.apk
+          if-no-files-found: error
+          retention-days: 2
+
+  macos:
+    needs: validate
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Flutter 3.44.6
+        run: |
+          git clone --depth 1 --branch 3.44.6 https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+      - name: Configure Flutter
+        run: |
+          flutter config --no-analytics
+          flutter config --enable-macos-desktop
+          flutter precache --macos
+      - name: Build and launch-check DMG
+        run: ./scripts/build-macos-dmg.sh
+      - name: Upload macOS build
+        uses: actions/upload-artifact@v7
+        with:
+          name: seil-build-macos
+          path: release/macos/*.dmg
+          if-no-files-found: error
+          retention-days: 2
+
+  windows:
+    needs: validate
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Flutter 3.44.6
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch 3.44.6 https://github.com/flutter/flutter.git "$env:RUNNER_TEMP\flutter"
+          "$env:RUNNER_TEMP\flutter\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Configure Flutter
+        shell: pwsh
+        run: |
+          flutter config --no-analytics
+          flutter config --enable-windows-desktop
+          flutter precache --windows
+          flutter pub get
+      - name: Build Windows app
+        shell: pwsh
+        run: |
+          flutter build windows --release
+          $versionLine = (Select-String -Path pubspec.yaml -Pattern '^version:').Line
+          $version = (($versionLine -replace '^version:\s*', '') -split '\+')[0]
+          New-Item -ItemType Directory -Force -Path release\windows | Out-Null
+          Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath "release\windows\SEIL-v$version-windows.zip"
+      - name: Verify Windows executable
+        shell: pwsh
+        run: |
+          if (-not (Test-Path build\windows\x64\runner\Release\SEIL.exe)) {
+            throw 'SEIL.exe was not produced.'
+          }
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v7
+        with:
+          name: seil-build-windows
+          path: release/windows/*.zip
+          if-no-files-found: error
+          retention-days: 2
+
+  bundle:
+    needs:
+      - android
+      - macos
+      - windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Read app version
+        id: version
+        run: |
+          version="$(sed -nE 's/^version:[[:space:]]*([^+[:space:]]+).*/\1/p' pubspec.yaml)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Download all platform builds
+        uses: actions/download-artifact@v7
+        with:
+          pattern: seil-build-*
+          path: SEIL-All-Platforms
+          merge-multiple: true
+      - name: Verify three deliverables
+        run: |
+          test "$(find SEIL-All-Platforms -maxdepth 1 -type f | wc -l)" -eq 3
+          find SEIL-All-Platforms -maxdepth 1 -type f -print
+      - name: Upload one all-platform folder
+        uses: actions/upload-artifact@v7
+        with:
+          name: SEIL-All-Platforms-v${{ steps.version.outputs.version }}
+          path: SEIL-All-Platforms/*
+          if-no-files-found: error
+          retention-days: 14

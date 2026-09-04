@@ -57,6 +57,7 @@ This repository follows a standard Flutter project layout.
 lib/        Flutter application source
 android/    Android platform project
 macos/      macOS desktop platform project
+windows/    Windows desktop platform project
 linux/      Linux desktop platform project
 web/        Web platform files
 assets/     Images, fonts, and file icons
@@ -163,6 +164,19 @@ APPLE_NOTARY_KEYCHAIN_PROFILE="seil-notary" \
 Without a Mac, run the **macOS DMG** workflow manually in GitHub Actions and
 download the SEIL-macOS-DMG artifact. That artifact is unsigned and intended
 for testing.
+
+### Build all platform apps
+
+The **All platform apps** workflow builds Android, macOS, and Windows on their
+native GitHub runners. Its final `SEIL-All-Platforms-v<version>` artifact
+contains exactly these three deliverables in one folder:
+
+- `SEIL-v<version>-android.apk`
+- `SEIL-v<version>-macos.dmg`
+- `SEIL-v<version>-windows.zip`
+
+Extract the Windows ZIP and run `SEIL.exe` from the extracted folder. The DLL
+and `data` files beside the executable are required and must stay together.
 
 To compare SSH responsiveness under tmux load, run the **macOS Performance
 Comparison** workflow and download its artifact. It contains two independently

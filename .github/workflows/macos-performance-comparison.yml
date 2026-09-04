@@ -2,9 +2,6 @@ name: macOS Performance Comparison
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - seil-update
 
 permissions:
   contents: read

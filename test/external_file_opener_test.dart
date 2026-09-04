@@ -29,8 +29,38 @@ void main() {
     expect(receivedCall?.arguments, {'path': '/tmp/report.csv'});
   });
 
-  test('unsupported platforms fail before invoking a native channel', () async {
+  test('macOS asks Finder to reveal a downloaded file', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    MethodCall? receivedCall;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      receivedCall = call;
+      return null;
+    });
+
+    await const ExternalFileOpener().reveal('/Users/me/Downloads/report.csv');
+
+    expect(receivedCall?.method, 'reveal');
+    expect(receivedCall?.arguments, {
+      'path': '/Users/me/Downloads/report.csv',
+    });
+  });
+
+  test('Windows forwards downloaded files to Explorer', () async {
     debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    MethodCall? receivedCall;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      receivedCall = call;
+      return null;
+    });
+
+    await const ExternalFileOpener()
+        .reveal(r'C:\Users\me\Downloads\report.csv');
+
+    expect(receivedCall?.method, 'reveal');
+  });
+
+  test('unsupported platforms fail before invoking a native channel', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
     var invoked = false;
     messenger.setMockMethodCallHandler(channel, (call) async {
       invoked = true;

@@ -31,7 +31,7 @@ class MainFlutterWindow: NSWindow, UNUserNotificationCenterDelegate {
       binaryMessenger: binaryMessenger
     )
     channel.setMethodCallHandler { call, result in
-      guard call.method == "open" else {
+      guard ["open", "reveal"].contains(call.method) else {
         result(FlutterMethodNotImplemented)
         return
       }
@@ -56,7 +56,14 @@ class MainFlutterWindow: NSWindow, UNUserNotificationCenterDelegate {
         return
       }
 
-      let opened = NSWorkspace.shared.open(URL(fileURLWithPath: path))
+      let fileURL = URL(fileURLWithPath: path)
+      if call.method == "reveal" {
+        NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+        result(nil)
+        return
+      }
+
+      let opened = NSWorkspace.shared.open(fileURL)
       if opened {
         result(nil)
       } else {
