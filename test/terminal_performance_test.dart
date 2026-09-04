@@ -74,6 +74,36 @@ void main() {
     ]);
   });
 
+  test('monitor work cannot block interactive commands', () async {
+    final interactiveQueue = SshCommandQueue();
+    final monitorQueue = SshCommandQueue();
+    final monitorStarted = Completer<void>();
+    final releaseMonitor = Completer<void>();
+    var monitorFinished = false;
+
+    final monitorWork = monitorQueue.run(
+      () async {
+        monitorStarted.complete();
+        await releaseMonitor.future;
+        monitorFinished = true;
+        return 'monitor';
+      },
+      priority: SshCommandPriority.background,
+    );
+
+    await monitorStarted.future;
+    final interactiveResult = await interactiveQueue.run(
+      () async => 'interactive',
+      priority: SshCommandPriority.interactive,
+    );
+
+    expect(interactiveResult, 'interactive');
+    expect(monitorFinished, isFalse);
+
+    releaseMonitor.complete();
+    await monitorWork;
+  });
+
   test('commands with the same coalescing key share one execution', () async {
     final queue = SshCommandQueue();
     final blocker = Completer<void>();
@@ -101,6 +131,31 @@ void main() {
 
     expect(await first, 'metadata');
     expect(await second, 'metadata');
+    expect(executionCount, 1);
+  });
+
+  test('many duplicate monitor refreshes still execute only once', () async {
+    final queue = SshCommandQueue();
+    final blocker = Completer<void>();
+    var executionCount = 0;
+
+    final requests = List.generate(
+      64,
+      (_) => queue.run(
+        () async {
+          executionCount += 1;
+          await blocker.future;
+          return 'shared-status';
+        },
+        priority: SshCommandPriority.background,
+        coalescingKey: 'tmux-session-status',
+      ),
+    );
+
+    blocker.complete();
+    final results = await Future.wait(requests);
+
+    expect(results, everyElement('shared-status'));
     expect(executionCount, 1);
   });
 }

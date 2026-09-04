@@ -224,9 +224,17 @@ flutter clean
 flutter pub get
 flutter test
 flutter analyze
+dart run tool/ssh_concurrency_benchmark.dart
 flutter build apk --debug
 flutter build apk --release
 ```
+
+The SSH concurrency benchmark compares the legacy shared command queue with
+the isolated monitor queue used by the current app at 1, 4, 8, 16, and 32
+simultaneous sessions. Use the interactive-command p95 value to detect tail
+latency regressions. It measures queueing delay with a simulated tmux scan;
+server and network latency still need to be checked against the target SSH
+host.
 
 ### License
 
