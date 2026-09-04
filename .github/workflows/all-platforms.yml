@@ -162,3 +162,38 @@ jobs:
           path: SEIL-All-Platforms/*
           if-no-files-found: error
           retention-days: 14
+
+  publish-release:
+    needs: bundle
+    if: github.event_name == 'push' && github.ref == 'refs/heads/seil-update'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Read app version
+        id: version
+        run: |
+          version="$(sed -nE 's/^version:[[:space:]]*([^+[:space:]]+).*/\1/p' pubspec.yaml)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Download platform files
+        uses: actions/download-artifact@v7
+        with:
+          pattern: seil-build-*
+          path: release-files
+          merge-multiple: true
+      - name: Publish downloadable release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          tag="seil-update-v${VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" release-files/* --clobber
+          else
+            gh release create "$tag" release-files/* \
+              --target "$GITHUB_SHA" \
+              --title "SEIL Update Test v${VERSION}" \
+              --notes "Android, macOS, and Windows test builds from the seil-update branch."
+          fi
