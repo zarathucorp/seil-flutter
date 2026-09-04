@@ -52,7 +52,13 @@ case "$variant" in
     ;;
 esac
 
-flutter build macos --release "${dart_defines[@]}"
+if [[ "$variant" == "standard" ]]; then
+  # macOS runners still use Bash 3.2, where expanding an empty array while
+  # nounset is enabled exits with an "unbound variable" error.
+  flutter build macos --release
+else
+  flutter build macos --release "${dart_defines[@]}"
+fi
 
 version="$(sed -nE 's/^version:[[:space:]]*([^+[:space:]]+).*/\1/p' pubspec.yaml)"
 if [[ -z "$version" ]]; then
