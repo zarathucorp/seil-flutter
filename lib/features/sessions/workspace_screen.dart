@@ -2301,14 +2301,20 @@ class _TerminalPaneState extends State<TerminalPane> {
   final viewNotifier = ValueNotifier<_TerminalViewData>(
     const _TerminalViewData(frame: _emptyTerminalFrame, error: null),
   );
-  final ListQueue<int> latencySamples = ListQueue<int>();
+  final performanceNotifier = ValueNotifier<int>(0);
+  final ListQueue<int> refreshLatencySamples = ListQueue<int>();
+  final ListQueue<int> inputLatencySamples = ListQueue<int>();
   final StringBuffer queuedLiteralInput = StringBuffer();
   Timer? pollTimer;
+  Timer? performanceProbeTimer;
   Timer? literalInputTimer;
   Timer? reconnectNoticeTimer;
   TmuxCaptureFrame frame = _emptyTerminalFrame;
   bool polling = false;
+  bool performanceProbeRunning = false;
   bool pollingStopped = false;
+  int latestRefreshLatencyMs = 0;
+  int latestInputLatencyMs = 0;
   int pollIntervalMs = 120;
   int extraScrollbackLines = 0;
   bool jumpToTopAfterNextPoll = false;
@@ -2367,8 +2373,10 @@ class _TerminalPaneState extends State<TerminalPane> {
   void dispose() {
     literalInputTimer?.cancel();
     pollTimer?.cancel();
+    performanceProbeTimer?.cancel();
     reconnectNoticeTimer?.cancel();
     viewNotifier.dispose();
+    performanceNotifier.dispose();
     scrollController.dispose();
     horizontalScrollController.dispose();
     super.dispose();
@@ -2382,12 +2390,14 @@ class _TerminalPaneState extends State<TerminalPane> {
       _restoreCachedFrame();
       if (widget.active) {
         _startPolling();
+        _startPerformanceProbes();
       }
       return;
     }
     if (widget.active != oldWidget.active) {
       if (widget.active) {
         _startPolling();
+        _startPerformanceProbes();
       } else {
         _stopPollingUntilActive();
       }
@@ -2411,7 +2421,11 @@ class _TerminalPaneState extends State<TerminalPane> {
     localError = null;
     extraScrollbackLines = 0;
     historyExhausted = false;
-    latencySamples.clear();
+    refreshLatencySamples.clear();
+    inputLatencySamples.clear();
+    latestRefreshLatencyMs = 0;
+    latestInputLatencyMs = 0;
+    performanceNotifier.value += 1;
     pollIntervalMs = _minPollIntervalMs;
     jumpToBottomAfterNextPoll = true;
     _terminalDiff.reset();
@@ -2428,7 +2442,46 @@ class _TerminalPaneState extends State<TerminalPane> {
 
   void _stopPollingUntilActive() {
     pollTimer?.cancel();
+    performanceProbeTimer?.cancel();
     pollingStopped = true;
+  }
+
+  void _startPerformanceProbes() {
+    performanceProbeTimer?.cancel();
+    if (seilPerformanceTestLabel.isEmpty || !widget.active) {
+      return;
+    }
+    unawaited(_probeInteractiveLatency());
+    performanceProbeTimer = Timer.periodic(
+      const Duration(seconds: 2),
+      (_) => unawaited(_probeInteractiveLatency()),
+    );
+  }
+
+  Future<void> _probeInteractiveLatency() async {
+    if (!mounted ||
+        !widget.active ||
+        pollingStopped ||
+        performanceProbeRunning) {
+      return;
+    }
+    final live = widget.state.activeSession;
+    if (live == null || live.isClosed) {
+      return;
+    }
+    performanceProbeRunning = true;
+    try {
+      final latencyMs = await live.measureInteractiveLatencyDuringMonitorScan();
+      if (mounted &&
+          widget.active &&
+          identical(live, widget.state.activeSession)) {
+        _recordInputLatency(latencyMs);
+      }
+    } catch (_) {
+      // The regular connection handling reports SSH failures to the user.
+    } finally {
+      performanceProbeRunning = false;
+    }
   }
 
   void _scheduleNextPoll() {
@@ -2464,7 +2517,7 @@ class _TerminalPaneState extends State<TerminalPane> {
           _currentFrameKey() != liveFrameKey) {
         return;
       }
-      _recordLatency(latency);
+      _recordRefreshLatency(latency);
       _updateHistoryExhaustion(
         nextContent: next.content,
         requestedScrollbackLines: requestedScrollbackLines,
@@ -2584,9 +2637,9 @@ class _TerminalPaneState extends State<TerminalPane> {
                   Positioned(
                     top: 8,
                     left: 10,
-                    child: ValueListenableBuilder<_TerminalViewData>(
-                      valueListenable: viewNotifier,
-                      builder: (context, view, _) => DecoratedBox(
+                    child: ValueListenableBuilder<int>(
+                      valueListenable: performanceNotifier,
+                      builder: (context, _, __) => DecoratedBox(
                         decoration: BoxDecoration(
                           color: const Color(0xE6111827),
                           borderRadius: BorderRadius.circular(8),
@@ -2598,8 +2651,11 @@ class _TerminalPaneState extends State<TerminalPane> {
                             vertical: 6,
                           ),
                           child: Text(
-                            'REFRESH ${view.frame.latencyMs} ms  '
-                            'P95 ${_latencyP95Ms()} ms',
+                            'REFRESH $latestRefreshLatencyMs ms  '
+                            'P95 ${_percentile95(refreshLatencySamples)} ms\n'
+                            'SCAN+INPUT $latestInputLatencyMs ms  '
+                            'P95 ${_percentile95(inputLatencySamples)} ms  '
+                            'MAX ${_maximum(inputLatencySamples)} ms',
                             style: const TextStyle(
                               color: Color(0xFFE5E7EB),
                               fontFamily: _terminalFontFamily,
@@ -2629,20 +2685,39 @@ class _TerminalPaneState extends State<TerminalPane> {
     );
   }
 
-  void _recordLatency(int latencyMs) {
-    latencySamples.addLast(latencyMs);
-    while (latencySamples.length > 100) {
-      latencySamples.removeFirst();
+  void _recordRefreshLatency(int latencyMs) {
+    latestRefreshLatencyMs = latencyMs;
+    _addRollingSample(refreshLatencySamples, latencyMs);
+    performanceNotifier.value += 1;
+  }
+
+  void _recordInputLatency(int latencyMs) {
+    latestInputLatencyMs = latencyMs;
+    _addRollingSample(inputLatencySamples, latencyMs);
+    performanceNotifier.value += 1;
+  }
+
+  void _addRollingSample(ListQueue<int> samples, int latencyMs) {
+    samples.addLast(latencyMs);
+    while (samples.length > 100) {
+      samples.removeFirst();
     }
   }
 
-  int _latencyP95Ms() {
-    if (latencySamples.isEmpty) {
+  int _percentile95(ListQueue<int> samples) {
+    if (samples.isEmpty) {
       return 0;
     }
-    final sorted = latencySamples.toList()..sort();
+    final sorted = samples.toList()..sort();
     final index = (sorted.length * .95).ceil() - 1;
     return sorted[index.clamp(0, sorted.length - 1)];
+  }
+
+  int _maximum(ListQueue<int> samples) {
+    if (samples.isEmpty) {
+      return 0;
+    }
+    return samples.reduce(math.max);
   }
 
   int _nextPollInterval(_TerminalDiffResult diff, bool metadataChanged) {

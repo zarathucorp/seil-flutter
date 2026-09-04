@@ -275,6 +275,27 @@ class LiveSshSession {
     );
   }
 
+  Future<int> measureInteractiveLatencyDuringMonitorScan() async {
+    final monitorScan = runMonitorCommand(
+      buildTmuxSessionStatusCommand(),
+      coalescingKey: 'tmux-session-status',
+    );
+    await Future<void>.delayed(Duration.zero);
+    final stopwatch = Stopwatch()..start();
+    int? latencyMs;
+    try {
+      await runCommand(
+        "printf ''",
+        priority: SshCommandPriority.interactive,
+      );
+      stopwatch.stop();
+      latencyMs = stopwatch.elapsedMilliseconds;
+    } finally {
+      await monitorScan;
+    }
+    return latencyMs;
+  }
+
   Stream<TmuxAttentionSignal>? startTmuxControlModeObserver() {
     if (!tmuxAvailable) {
       return null;

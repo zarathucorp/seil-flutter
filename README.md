@@ -171,10 +171,12 @@ installable apps built from the same source:
 - `SEIL Previous Test` uses the previous shared SSH command queue.
 - `SEIL Current Test` uses the isolated monitor queue.
 
-Each test app shows its mode in a corner banner and displays the current
-terminal refresh latency plus the rolling p95 latency. Connect both apps to the
-same host, use the same tmux workload, and compare p95 after at least one
-minute. Quit one test app before measuring the other.
+Each test app shows its mode in a corner banner. Every two seconds it
+deliberately overlaps a full tmux monitor scan with a harmless
+interactive-priority SSH probe, then displays SCAN+INPUT current, p95, and
+maximum latency alongside terminal refresh latency. Connect both apps to the
+same host, use the same tmux workload, and compare SCAN+INPUT p95 after at
+least one minute. Quit one test app before measuring the other.
 
 If macOS blocks the unsigned test app, try opening it once, then go to
 **System Settings > Privacy & Security > Security** and choose **Open Anyway**.
