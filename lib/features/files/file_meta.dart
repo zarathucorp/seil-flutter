@@ -50,8 +50,18 @@ const _downloadOnlyExtensions = {
   'xls',
   'xlsx',
 };
-const _imageExtensions = {'jpg', 'jpeg', 'png', 'webp'};
+const _imageExtensions = {
+  'jpg',
+  'jpeg',
+  'png',
+  'webp',
+  'bmp',
+  'wbmp',
+  'tif',
+  'tiff'
+};
 const _iconByExtension = {
+  'bmp': 'file_type_image.svg',
   'c': 'file_type_c.svg',
   'cc': 'file_type_cpp.svg',
   'conf': 'file_type_config.svg',
@@ -90,10 +100,13 @@ const _iconByExtension = {
   'sh': 'file_type_shell.svg',
   'sql': 'file_type_sql.svg',
   'text': 'file_type_text.svg',
+  'tif': 'file_type_image.svg',
+  'tiff': 'file_type_image.svg',
   'toml': 'file_type_toml.svg',
   'ts': 'file_type_typescript.svg',
   'tsx': 'file_type_reactts.svg',
   'txt': 'file_type_text.svg',
+  'wbmp': 'file_type_image.svg',
   'webp': 'file_type_image.svg',
   'xls': 'file_type_excel.svg',
   'xlsx': 'file_type_excel.svg',

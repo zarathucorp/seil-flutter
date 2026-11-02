@@ -6,6 +6,7 @@ import 'dart:ui';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -20,6 +21,7 @@ import '../../core/platform/download_saver.dart';
 import '../../core/platform/external_file_opener.dart';
 import '../../shared/app_state.dart';
 import '../../shared/models.dart';
+import '../files/tiff_preview.dart';
 import 'ssh_session_service.dart';
 
 const _border = Color(0xFFE4E4E7);
@@ -5552,6 +5554,10 @@ class _FilePreviewScreenState extends State<FilePreviewScreen> {
   Future<_LoadedPreview> _loadPreview() async {
     if (widget.entry.previewKind == FilePreviewKind.image) {
       final bytes = await widget.session.downloadBytes(widget.entry.path);
+      final extension = p.extension(widget.entry.path).toLowerCase();
+      if (extension == '.tif' || extension == '.tiff') {
+        return _LoadedPreview(imagePages: await compute(decodeTiffPages, bytes));
+      }
       return _LoadedPreview(imageBytes: bytes);
     }
     if (widget.entry.previewKind == FilePreviewKind.download) {
@@ -5630,6 +5636,9 @@ class _FilePreviewScreenState extends State<FilePreviewScreen> {
               );
             }
             final preview = snapshot.data!;
+            if (preview.imagePages != null) {
+              return TiffPreviewGallery(pages: preview.imagePages!);
+            }
             if (preview.imageBytes != null) {
               return InteractiveViewer(
                 minScale: 0.5,
@@ -5775,11 +5784,13 @@ class _LoadedPreview {
   const _LoadedPreview({
     this.textFile,
     this.imageBytes,
+    this.imagePages,
     this.unsupportedPreview = false,
   });
 
   final RemoteTextFile? textFile;
   final Uint8List? imageBytes;
+  final List<Uint8List>? imagePages;
   final bool unsupportedPreview;
 }
 
