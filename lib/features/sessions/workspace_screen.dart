@@ -5556,7 +5556,8 @@ class _FilePreviewScreenState extends State<FilePreviewScreen> {
       final bytes = await widget.session.downloadBytes(widget.entry.path);
       final extension = p.extension(widget.entry.path).toLowerCase();
       if (extension == '.tif' || extension == '.tiff') {
-        return _LoadedPreview(imagePages: await compute(decodeTiffPages, bytes));
+        return _LoadedPreview(
+            imagePages: await compute(decodeTiffPages, bytes));
       }
       return _LoadedPreview(imageBytes: bytes);
     }
