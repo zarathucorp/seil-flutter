@@ -6,6 +6,7 @@ import 'dart:ui';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -13,11 +14,14 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 
+import '../../core/build_config.dart';
 import '../../core/localization/seil_error_codes.dart';
 import '../../core/localization/seil_localizations.dart';
+import '../../core/platform/download_saver.dart';
 import '../../core/platform/external_file_opener.dart';
 import '../../shared/app_state.dart';
 import '../../shared/models.dart';
+import '../files/tiff_preview.dart';
 import 'ssh_session_service.dart';
 
 const _border = Color(0xFFE4E4E7);
@@ -41,6 +45,21 @@ const _terminalMutedForeground = Color(0xFFA1A1AA);
 const _terminalBottomPaddingLines = '\n\n\n\n';
 const _terminalAutoScrollBottomTolerance = 24.0;
 const tmuxBackgroundRefreshInterval = Duration(seconds: 2);
+
+double tmuxTabWidthForLabel(String label) {
+  final painter = TextPainter(
+    text: TextSpan(
+      text: label,
+      style: const TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w800,
+      ),
+    ),
+    maxLines: 1,
+    textDirection: TextDirection.ltr,
+  )..layout();
+  return (painter.width + 16).clamp(32.0, 168.0).toDouble();
+}
 
 class _WorkspacePerformance extends InheritedWidget {
   const _WorkspacePerformance({
@@ -147,9 +166,7 @@ class _WorkspaceCommandBar extends StatelessWidget {
       return const SizedBox.shrink();
     }
 
-    final tmuxLabel = active.tmuxAvailable
-        ? _compactPathDisplay(active.currentPath)
-        : _compactPathDisplay(active.currentPath);
+    final tmuxLabel = _compactPathDisplay(active.currentPath);
     return ClipRRect(
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
@@ -169,7 +186,9 @@ class _WorkspaceCommandBar extends StatelessWidget {
                     child: _HeaderSelectButton(
                       icon: LucideIcons.server,
                       title: active.displayName,
-                      statusColor: active.tmuxAvailable ? _success : _warning,
+                      statusColor: state.isSessionConnected(active)
+                          ? _success
+                          : _warning,
                       onPressed: () => _showServerSheet(context),
                     ),
                   ),
@@ -783,15 +802,27 @@ class _WorkspaceCommandBar extends StatelessWidget {
     SavedConnection connection,
   ) async {
     String? secret;
+    String? passphrase;
     if (!connection.hasStoredSecret) {
-      secret = await _askSecret(context, connection.authMode);
-      if (secret == null || secret.isEmpty) {
+      final credentials = await _askSecret(context, connection.authMode);
+      if (credentials == null || credentials.secret.isEmpty) {
+        return null;
+      }
+      secret = credentials.secret;
+      passphrase = credentials.passphrase;
+    } else if (await state.storedPrivateKeyNeedsPassphrase(connection)) {
+      if (!context.mounted) {
+        return null;
+      }
+      passphrase = await _askPassphrase(context);
+      if (passphrase == null || passphrase.isEmpty) {
         return null;
       }
     }
     await state.connectSaved(
       connection,
       transientSecret: secret,
+      transientPassphrase: passphrase,
       reuseExisting: true,
     );
     if (state.errorMessage != null || state.activeSession == null) {
@@ -800,20 +831,90 @@ class _WorkspaceCommandBar extends StatelessWidget {
     return state.activeSession;
   }
 
-  Future<String?> _askSecret(BuildContext context, AuthMode authMode) {
+  Future<({String secret, String? passphrase})?> _askSecret(
+    BuildContext context,
+    AuthMode authMode,
+  ) async {
     final controller = TextEditingController();
-    return showDialog<String>(
+    final passphraseController = TextEditingController();
+    final result = await showDialog<({String secret, String? passphrase})>(
       context: context,
       builder: (context) => AlertDialog(
+        scrollable: true,
         title: Text(authMode == AuthMode.password
             ? context.l10n.sshPassword
             : 'Private Key'),
+        content: authMode == AuthMode.password
+            ? TextField(
+                controller: controller,
+                obscureText: true,
+                autofocus: true,
+                decoration:
+                    InputDecoration(labelText: context.l10n.sshPassword),
+              )
+            : Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: controller,
+                    minLines: 6,
+                    maxLines: 10,
+                    autofocus: true,
+                    decoration:
+                        InputDecoration(labelText: context.l10n.privateKeyRaw),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: passphraseController,
+                    obscureText: true,
+                    enableSuggestions: false,
+                    autocorrect: false,
+                    decoration: InputDecoration(
+                      labelText: context.l10n.privateKeyPassphrase,
+                    ),
+                  ),
+                ],
+              ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(context.l10n.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(
+              context,
+              (
+                secret: controller.text,
+                passphrase: authMode == AuthMode.privateKey
+                    ? passphraseController.text
+                    : null,
+              ),
+            ),
+            child: Text(context.l10n.connect),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    passphraseController.dispose();
+    return result;
+  }
+
+  Future<String?> _askPassphrase(BuildContext context) async {
+    final controller = TextEditingController();
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(context.l10n.privateKeyPassphrase),
         content: TextField(
           controller: controller,
-          minLines: authMode == AuthMode.privateKey ? 6 : 1,
-          maxLines: authMode == AuthMode.privateKey ? 10 : 1,
-          obscureText: authMode == AuthMode.password,
-          decoration: InputDecoration(labelText: context.l10n.secret),
+          obscureText: true,
+          enableSuggestions: false,
+          autocorrect: false,
+          autofocus: true,
+          decoration: InputDecoration(
+            labelText: context.l10n.privateKeyPassphrase,
+          ),
         ),
         actions: [
           TextButton(
@@ -827,6 +928,8 @@ class _WorkspaceCommandBar extends StatelessWidget {
         ],
       ),
     );
+    controller.dispose();
+    return result;
   }
 }
 
@@ -1003,7 +1106,9 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
     _scheduleDefaultNameCleanup(active, redundantDefaultNames);
     final tabWidthsByName = <String, double>{
       for (final session in sessions)
-        session.name: customNamesByName[session.name] == null ? 32 : 104,
+        session.name: tmuxTabWidthForLabel(
+          customNamesByName[session.name] ?? labelsByName[session.name] ?? '',
+        ),
     };
     return SizedBox(
       height: 32,
@@ -1053,13 +1158,15 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
                     final customName = customNamesByName[session.name];
                     final defaultLabel =
                         labelsByName[session.name] ?? (index + 1).toString();
+                    final label = customName ?? defaultLabel;
                     return Padding(
                       key: ValueKey(session.name),
                       padding: const EdgeInsets.only(right: 5),
                       child: _TmuxTabReorderDragStartListener(
                         index: index,
                         child: _SessionNumberButton(
-                          label: customName ?? defaultLabel,
+                          key: ValueKey('${session.name}\u0000$label'),
+                          label: label,
                           width: tabWidthsByName[session.name] ?? 32,
                           selected: selected,
                           attentionState: session.attentionState,
@@ -1270,6 +1377,7 @@ class _TmuxTabReorderDragStartListener extends ReorderableDragStartListener {
 
 class _SessionNumberButton extends StatefulWidget {
   const _SessionNumberButton({
+    super.key,
     required this.label,
     required this.width,
     required this.selected,
@@ -2216,13 +2324,20 @@ class _TerminalPaneState extends State<TerminalPane> {
   final viewNotifier = ValueNotifier<_TerminalViewData>(
     const _TerminalViewData(frame: _emptyTerminalFrame, error: null),
   );
+  final performanceNotifier = ValueNotifier<int>(0);
+  final ListQueue<int> refreshLatencySamples = ListQueue<int>();
+  final ListQueue<int> inputLatencySamples = ListQueue<int>();
   final StringBuffer queuedLiteralInput = StringBuffer();
   Timer? pollTimer;
+  Timer? performanceProbeTimer;
   Timer? literalInputTimer;
   Timer? reconnectNoticeTimer;
   TmuxCaptureFrame frame = _emptyTerminalFrame;
   bool polling = false;
+  bool performanceProbeRunning = false;
   bool pollingStopped = false;
+  int latestRefreshLatencyMs = 0;
+  int latestInputLatencyMs = 0;
   int pollIntervalMs = 120;
   int extraScrollbackLines = 0;
   bool jumpToTopAfterNextPoll = false;
@@ -2281,8 +2396,10 @@ class _TerminalPaneState extends State<TerminalPane> {
   void dispose() {
     literalInputTimer?.cancel();
     pollTimer?.cancel();
+    performanceProbeTimer?.cancel();
     reconnectNoticeTimer?.cancel();
     viewNotifier.dispose();
+    performanceNotifier.dispose();
     scrollController.dispose();
     horizontalScrollController.dispose();
     super.dispose();
@@ -2296,12 +2413,14 @@ class _TerminalPaneState extends State<TerminalPane> {
       _restoreCachedFrame();
       if (widget.active) {
         _startPolling();
+        _startPerformanceProbes();
       }
       return;
     }
     if (widget.active != oldWidget.active) {
       if (widget.active) {
         _startPolling();
+        _startPerformanceProbes();
       } else {
         _stopPollingUntilActive();
       }
@@ -2325,6 +2444,11 @@ class _TerminalPaneState extends State<TerminalPane> {
     localError = null;
     extraScrollbackLines = 0;
     historyExhausted = false;
+    refreshLatencySamples.clear();
+    inputLatencySamples.clear();
+    latestRefreshLatencyMs = 0;
+    latestInputLatencyMs = 0;
+    performanceNotifier.value += 1;
     pollIntervalMs = _minPollIntervalMs;
     jumpToBottomAfterNextPoll = true;
     _terminalDiff.reset();
@@ -2341,7 +2465,46 @@ class _TerminalPaneState extends State<TerminalPane> {
 
   void _stopPollingUntilActive() {
     pollTimer?.cancel();
+    performanceProbeTimer?.cancel();
     pollingStopped = true;
+  }
+
+  void _startPerformanceProbes() {
+    performanceProbeTimer?.cancel();
+    if (seilPerformanceTestLabel.isEmpty || !widget.active) {
+      return;
+    }
+    unawaited(_probeInteractiveLatency());
+    performanceProbeTimer = Timer.periodic(
+      const Duration(seconds: 2),
+      (_) => unawaited(_probeInteractiveLatency()),
+    );
+  }
+
+  Future<void> _probeInteractiveLatency() async {
+    if (!mounted ||
+        !widget.active ||
+        pollingStopped ||
+        performanceProbeRunning) {
+      return;
+    }
+    final live = widget.state.activeSession;
+    if (live == null || live.isClosed) {
+      return;
+    }
+    performanceProbeRunning = true;
+    try {
+      final latencyMs = await live.measureInteractiveLatencyDuringMonitorScan();
+      if (mounted &&
+          widget.active &&
+          identical(live, widget.state.activeSession)) {
+        _recordInputLatency(latencyMs);
+      }
+    } catch (_) {
+      // The regular connection handling reports SSH failures to the user.
+    } finally {
+      performanceProbeRunning = false;
+    }
   }
 
   void _scheduleNextPoll() {
@@ -2377,6 +2540,7 @@ class _TerminalPaneState extends State<TerminalPane> {
           _currentFrameKey() != liveFrameKey) {
         return;
       }
+      _recordRefreshLatency(latency);
       _updateHistoryExhaustion(
         nextContent: next.content,
         requestedScrollbackLines: requestedScrollbackLines,
@@ -2492,6 +2656,40 @@ class _TerminalPaneState extends State<TerminalPane> {
                     onPressed: _deleteCurrentTmuxSession,
                   ),
                 ),
+                if (seilPerformanceTestLabel.isNotEmpty)
+                  Positioned(
+                    top: 8,
+                    left: 10,
+                    child: ValueListenableBuilder<int>(
+                      valueListenable: performanceNotifier,
+                      builder: (context, _, __) => DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: const Color(0xE6111827),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0x6673D0FF)),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 9,
+                            vertical: 6,
+                          ),
+                          child: Text(
+                            'REFRESH $latestRefreshLatencyMs ms  '
+                            'P95 ${_percentile95(refreshLatencySamples)} ms\n'
+                            'SCAN+INPUT $latestInputLatencyMs ms  '
+                            'P95 ${_percentile95(inputLatencySamples)} ms  '
+                            'MAX ${_maximum(inputLatencySamples)} ms',
+                            style: const TextStyle(
+                              color: Color(0xFFE5E7EB),
+                              fontFamily: _terminalFontFamily,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -2508,6 +2706,41 @@ class _TerminalPaneState extends State<TerminalPane> {
         ],
       ),
     );
+  }
+
+  void _recordRefreshLatency(int latencyMs) {
+    latestRefreshLatencyMs = latencyMs;
+    _addRollingSample(refreshLatencySamples, latencyMs);
+    performanceNotifier.value += 1;
+  }
+
+  void _recordInputLatency(int latencyMs) {
+    latestInputLatencyMs = latencyMs;
+    _addRollingSample(inputLatencySamples, latencyMs);
+    performanceNotifier.value += 1;
+  }
+
+  void _addRollingSample(ListQueue<int> samples, int latencyMs) {
+    samples.addLast(latencyMs);
+    while (samples.length > 100) {
+      samples.removeFirst();
+    }
+  }
+
+  int _percentile95(ListQueue<int> samples) {
+    if (samples.isEmpty) {
+      return 0;
+    }
+    final sorted = samples.toList()..sort();
+    final index = (sorted.length * .95).ceil() - 1;
+    return sorted[index.clamp(0, sorted.length - 1)];
+  }
+
+  int _maximum(ListQueue<int> samples) {
+    if (samples.isEmpty) {
+      return 0;
+    }
+    return samples.reduce(math.max);
   }
 
   int _nextPollInterval(_TerminalDiffResult diff, bool metadataChanged) {
@@ -5321,6 +5554,11 @@ class _FilePreviewScreenState extends State<FilePreviewScreen> {
   Future<_LoadedPreview> _loadPreview() async {
     if (widget.entry.previewKind == FilePreviewKind.image) {
       final bytes = await widget.session.downloadBytes(widget.entry.path);
+      final extension = p.extension(widget.entry.path).toLowerCase();
+      if (extension == '.tif' || extension == '.tiff') {
+        return _LoadedPreview(
+            imagePages: await compute(decodeTiffPages, bytes));
+      }
       return _LoadedPreview(imageBytes: bytes);
     }
     if (widget.entry.previewKind == FilePreviewKind.download) {
@@ -5369,6 +5607,11 @@ class _FilePreviewScreenState extends State<FilePreviewScreen> {
           ],
         ),
         actions: [
+          _ToolbarButton(
+            icon: LucideIcons.download,
+            tooltip: context.l10n.download,
+            onPressed: downloading ? null : () => unawaited(_download()),
+          ),
           if (editing)
             _ToolbarButton(
               icon: LucideIcons.save,
@@ -5394,6 +5637,9 @@ class _FilePreviewScreenState extends State<FilePreviewScreen> {
               );
             }
             final preview = snapshot.data!;
+            if (preview.imagePages != null) {
+              return TiffPreviewGallery(pages: preview.imagePages!);
+            }
             if (preview.imageBytes != null) {
               return InteractiveViewer(
                 minScale: 0.5,
@@ -5464,14 +5710,22 @@ class _FilePreviewScreenState extends State<FilePreviewScreen> {
     final downloadedMessage = context.l10n.fileDownloaded;
     try {
       final bytes = await widget.session.downloadBytes(widget.entry.path);
-      final savedPath = await FilePicker.platform.saveFile(
+      final savedPath = await DownloadSaver().save(
         dialogTitle: downloadTitle,
         fileName: widget.entry.name,
         bytes: bytes,
       );
       if (savedPath != null && mounted) {
+        try {
+          await const ExternalFileOpener().reveal(savedPath);
+        } catch (_) {
+          // The file is already saved; revealing it is only a convenience.
+        }
+        if (!mounted) {
+          return;
+        }
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(downloadedMessage)),
+          SnackBar(content: Text('$downloadedMessage\n$savedPath')),
         );
       }
     } catch (error) {
@@ -5531,11 +5785,13 @@ class _LoadedPreview {
   const _LoadedPreview({
     this.textFile,
     this.imageBytes,
+    this.imagePages,
     this.unsupportedPreview = false,
   });
 
   final RemoteTextFile? textFile;
   final Uint8List? imageBytes;
+  final List<Uint8List>? imagePages;
   final bool unsupportedPreview;
 }
 

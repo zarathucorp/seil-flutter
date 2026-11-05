@@ -31,4 +31,24 @@ void main() {
       'Connection failed: server did not respond (30s timeout)',
     );
   });
+
+  test('explains a rejected password authentication attempt', () {
+    expect(
+      seilConnectionFailureMessage(
+        'ko',
+        StateError(SeilErrorCodes.sshPasswordAuthenticationRejected),
+      ),
+      contains('비밀번호 및 keyboard-interactive 인증을 모두 거부'),
+    );
+  });
+
+  test('explains a rejected private key authentication attempt', () {
+    expect(
+      seilConnectionFailureMessage(
+        'ko',
+        StateError(SeilErrorCodes.sshPrivateKeyAuthenticationRejected),
+      ),
+      contains('공개 키가 서버의 authorized_keys에 등록'),
+    );
+  });
 }

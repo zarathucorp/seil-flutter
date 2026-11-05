@@ -1,6 +1,7 @@
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'package:sqflite/sqflite.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../../shared/models.dart';
 import 'secure_vault.dart';
@@ -22,11 +23,14 @@ class LocalDatabase {
   Future<void> open() async {
     final documents = await getApplicationDocumentsDirectory();
     final path = p.join(documents.path, 'seil_mobile.db');
-    _db = await openDatabase(
+    final factory = seilDatabaseFactoryForPlatform();
+    _db = await factory.openDatabase(
       path,
-      version: 2,
-      onCreate: _create,
-      onUpgrade: _upgrade,
+      options: OpenDatabaseOptions(
+        version: 2,
+        onCreate: _create,
+        onUpgrade: _upgrade,
+      ),
     );
     await _ensureSettingsTable(db);
     await _ensureConnectionHistoryLimitColumn(db);
@@ -124,6 +128,16 @@ class LocalDatabase {
       )
     ''');
   }
+}
+
+DatabaseFactory seilDatabaseFactoryForPlatform() {
+  if (!kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.windows ||
+          defaultTargetPlatform == TargetPlatform.linux)) {
+    sqfliteFfiInit();
+    return databaseFactoryFfi;
+  }
+  return databaseFactory;
 }
 
 String authModeToDb(AuthMode mode) {

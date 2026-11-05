@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 class TerminalNotificationLaunchTarget {
@@ -41,6 +42,9 @@ class TerminalNotificationService {
   final MethodChannel _channel;
 
   Future<bool> requestPermission() async {
+    if (!_isSupportedPlatform) {
+      return false;
+    }
     final granted = await _channel.invokeMethod<bool>('requestPermission');
     return granted ?? false;
   }
@@ -52,6 +56,9 @@ class TerminalNotificationService {
     required String connectionFingerprint,
     required String tmuxSessionName,
   }) {
+    if (!_isSupportedPlatform) {
+      return Future.value();
+    }
     return _channel.invokeMethod<void>('show', {
       'notificationId': notificationId,
       'title': title,
@@ -62,6 +69,9 @@ class TerminalNotificationService {
   }
 
   Future<TerminalNotificationLaunchTarget?> consumeLaunchTarget() async {
+    if (!_isSupportedPlatform) {
+      return null;
+    }
     try {
       final value = await _channel.invokeMethod<Object?>('consumeLaunchTarget');
       return TerminalNotificationLaunchTarget.fromMap(value);
@@ -73,6 +83,9 @@ class TerminalNotificationService {
   void setLaunchTargetHandler(
     void Function(TerminalNotificationLaunchTarget target)? handler,
   ) {
+    if (!_isSupportedPlatform) {
+      return;
+    }
     if (handler == null) {
       _channel.setMethodCallHandler(null);
       return;
@@ -88,4 +101,9 @@ class TerminalNotificationService {
       }
     });
   }
+
+  bool get _isSupportedPlatform =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.macOS);
 }

@@ -75,6 +75,7 @@ class ConnectionListScreen extends StatelessWidget {
                   _LiveSessionCard(
                     session: session,
                     number: state.sessionNumber(session),
+                    connected: state.isSessionConnected(session),
                     onPressed: () => state.selectSession(session),
                   ),
                 const SizedBox(height: 16),
@@ -145,40 +146,127 @@ class ConnectionListScreen extends StatelessWidget {
   Future<void> _connectSaved(
       BuildContext context, SavedConnection connection) async {
     String? secret;
+    String? passphrase;
     if (!connection.hasStoredSecret) {
-      secret = await _askSecret(context, connection.authMode);
-      if (secret == null || secret.isEmpty) {
+      final credentials = await _askSecret(context, connection.authMode);
+      if (credentials == null || credentials.secret.isEmpty) {
+        return;
+      }
+      secret = credentials.secret;
+      passphrase = credentials.passphrase;
+    } else if (await state.storedPrivateKeyNeedsPassphrase(connection)) {
+      if (!context.mounted) {
+        return;
+      }
+      passphrase = await _askPassphrase(context);
+      if (passphrase == null || passphrase.isEmpty) {
         return;
       }
     }
-    await state.connectSaved(connection, transientSecret: secret);
+    await state.connectSaved(
+      connection,
+      transientSecret: secret,
+      transientPassphrase: passphrase,
+    );
   }
 
-  Future<String?> _askSecret(BuildContext context, AuthMode authMode) {
+  Future<({String secret, String? passphrase})?> _askSecret(
+    BuildContext context,
+    AuthMode authMode,
+  ) async {
     final controller = TextEditingController();
-    return showDialog<String>(
+    final passphraseController = TextEditingController();
+    final result = await showDialog<({String secret, String? passphrase})>(
       context: context,
       builder: (context) => AlertDialog(
+        scrollable: true,
         title: Text(authMode == AuthMode.password
             ? context.l10n.sshPassword
             : 'Private Key'),
-        content: TextField(
-          controller: controller,
-          minLines: authMode == AuthMode.privateKey ? 6 : 1,
-          maxLines: authMode == AuthMode.privateKey ? 10 : 1,
-          obscureText: authMode == AuthMode.password,
-          decoration: InputDecoration(labelText: context.l10n.secret),
-        ),
+        content: authMode == AuthMode.password
+            ? TextField(
+                controller: controller,
+                obscureText: true,
+                autofocus: true,
+                decoration:
+                    InputDecoration(labelText: context.l10n.sshPassword),
+              )
+            : Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: controller,
+                    minLines: 6,
+                    maxLines: 10,
+                    autofocus: true,
+                    decoration:
+                        InputDecoration(labelText: context.l10n.privateKeyRaw),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: passphraseController,
+                    obscureText: true,
+                    enableSuggestions: false,
+                    autocorrect: false,
+                    decoration: InputDecoration(
+                      labelText: context.l10n.privateKeyPassphrase,
+                    ),
+                  ),
+                ],
+              ),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context),
               child: Text(context.l10n.cancel)),
           FilledButton(
-              onPressed: () => Navigator.pop(context, controller.text),
+              onPressed: () => Navigator.pop(
+                    context,
+                    (
+                      secret: controller.text,
+                      passphrase: authMode == AuthMode.privateKey
+                          ? passphraseController.text
+                          : null,
+                    ),
+                  ),
               child: Text(context.l10n.connect)),
         ],
       ),
     );
+    controller.dispose();
+    passphraseController.dispose();
+    return result;
+  }
+
+  Future<String?> _askPassphrase(BuildContext context) async {
+    final controller = TextEditingController();
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(context.l10n.privateKeyPassphrase),
+        content: TextField(
+          controller: controller,
+          obscureText: true,
+          enableSuggestions: false,
+          autocorrect: false,
+          autofocus: true,
+          decoration: InputDecoration(
+            labelText: context.l10n.privateKeyPassphrase,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(context.l10n.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text),
+            child: Text(context.l10n.connect),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    return result;
   }
 
   Future<void> _showConnectionSheet(BuildContext context) {
@@ -203,11 +291,13 @@ class _LiveSessionCard extends StatelessWidget {
   const _LiveSessionCard({
     required this.session,
     required this.number,
+    required this.connected,
     required this.onPressed,
   });
 
   final LiveSshSession session;
   final int number;
+  final bool connected;
   final VoidCallback onPressed;
 
   @override
@@ -236,14 +326,15 @@ class _LiveSessionCard extends StatelessWidget {
                 right: -1,
                 bottom: -1,
                 child: _StatusLamp(
-                  color: session.tmuxAvailable ? _success : _warning,
+                  color: connected ? _success : _warning,
                 ),
               ),
             ],
           ),
           title: Text(session.displayName),
           subtitle: Text(
-            '${session.username}@${session.hostName} · ${_compactPathName(session.currentPath)}',
+            '${session.username}@${session.hostName} · ${_compactPathName(session.currentPath)}'
+            '${session.tmuxAvailable ? '' : ' · ${context.l10n.tmuxUnavailable}'}',
           ),
           trailing: const Icon(LucideIcons.chevronRight, size: 16),
           onTap: onPressed,
@@ -346,6 +437,7 @@ class _ConnectionFormState extends State<_ConnectionForm> {
   final tmuxHistoryLimit =
       TextEditingController(text: defaultTmuxHistoryLimit.toString());
   final secret = TextEditingController();
+  final passphrase = TextEditingController();
   AuthMode authMode = AuthMode.password;
   bool saveSecret = false;
   bool submitting = false;
@@ -359,6 +451,7 @@ class _ConnectionFormState extends State<_ConnectionForm> {
     username.dispose();
     tmuxHistoryLimit.dispose();
     secret.dispose();
+    passphrase.dispose();
     super.dispose();
   }
 
@@ -500,6 +593,21 @@ class _ConnectionFormState extends State<_ConnectionForm> {
               onSubmitted:
                   authMode == AuthMode.password ? (_) => _submit() : null,
             ),
+            if (authMode == AuthMode.privateKey) ...[
+              const SizedBox(height: 12),
+              TextField(
+                controller: passphrase,
+                enabled: !submitting,
+                obscureText: true,
+                enableSuggestions: false,
+                autocorrect: false,
+                textInputAction: TextInputAction.done,
+                decoration: InputDecoration(
+                  labelText: l10n.privateKeyPassphrase,
+                ),
+                onSubmitted: (_) => _submit(),
+              ),
+            ],
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               value: saveSecret,
@@ -553,6 +661,7 @@ class _ConnectionFormState extends State<_ConnectionForm> {
         tmuxHistoryLimit: validated.tmuxHistoryLimit,
         secret: secret.text,
         saveSecret: saveSecret,
+        passphrase: authMode == AuthMode.privateKey ? passphrase.text : '',
       ),
       initialPaneIndex: 0,
     );

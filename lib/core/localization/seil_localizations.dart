@@ -415,6 +415,13 @@ class SeilLocalizations {
         zh: '下载',
       );
 
+  String get tmuxUnavailable => _t(
+        en: 'tmux unavailable',
+        ko: 'tmux 사용 불가',
+        ja: 'tmux 利用不可',
+        zh: 'tmux 不可用',
+      );
+
   String get servers => _t(
         en: 'Servers',
         ko: '서버',
@@ -819,6 +826,13 @@ class SeilLocalizations {
         ko: 'Private Key 원문',
         ja: 'Private Key 本文',
         zh: 'Private Key 原文',
+      );
+
+  String get privateKeyPassphrase => _t(
+        en: 'Private key passphrase (optional)',
+        ko: '개인 키 passphrase (선택)',
+        ja: '秘密鍵のパスフレーズ（任意）',
+        zh: '私钥密码短语（可选）',
       );
 
   String get saveSecretOnDevice => _t(
@@ -1412,6 +1426,15 @@ String seilLocalizedErrorMessage(String languageCode, Object error) {
       zh: '缺少已保存的 SSH secret。请重新输入后再连接。',
     );
   }
+  if (message == SeilErrorCodes.privateKeyPassphraseRequired) {
+    return _localizedByCode(
+      languageCode,
+      en: 'This private key is encrypted. Enter its passphrase.',
+      ko: '암호화된 개인 키입니다. 개인 키 passphrase를 입력하세요.',
+      ja: 'この秘密鍵は暗号化されています。パスフレーズを入力してください。',
+      zh: '此私钥已加密。请输入私钥密码短语。',
+    );
+  }
   if (message == SeilErrorCodes.sshAgentUnsupported ||
       message.contains('SSH Agent 인증')) {
     return _localizedByCode(
@@ -1420,6 +1443,15 @@ String seilLocalizedErrorMessage(String languageCode, Object error) {
       ko: '모바일 앱에서는 SSH Agent 인증을 지원하지 않습니다.',
       ja: 'モバイルアプリでは SSH Agent 認証に対応していません。',
       zh: '移动应用不支持 SSH Agent 认证。',
+    );
+  }
+  if (message == SeilErrorCodes.sftpOperationTimeout) {
+    return _localizedByCode(
+      languageCode,
+      en: 'The server did not respond to the file request. Try again after reconnecting.',
+      ko: '서버가 파일 요청에 응답하지 않았습니다. 재접속 후 다시 시도하세요.',
+      ja: 'サーバーがファイル要求に応答しませんでした。再接続後にもう一度お試しください。',
+      zh: '服务器未响应文件请求。请重新连接后重试。',
     );
   }
   if (message == SeilErrorCodes.directoryPathRequired ||
@@ -1552,6 +1584,24 @@ String seilConnectionFailureMessage(String languageCode, Object error) {
       ko: '연결 실패: TCP 연결 후 SSH 인증 또는 초기화 시간 초과 (30초)',
       ja: '接続に失敗しました: TCP 接続後の SSH 認証または初期化がタイムアウトしました（30 秒）',
       zh: '连接失败：TCP 已连接，但 SSH 认证或初始化超时（30 秒）',
+    );
+  }
+  if (rawMessage == SeilErrorCodes.sshPasswordAuthenticationRejected) {
+    return _localizedByCode(
+      languageCode,
+      en: 'Connection failed: the SSH server rejected both password and keyboard-interactive authentication. Check the SSH username and server password.',
+      ko: '연결 실패: SSH 서버가 비밀번호 및 keyboard-interactive 인증을 모두 거부했습니다. SSH 사용자명과 서버 비밀번호를 확인해 주세요.',
+      ja: '接続に失敗しました: SSH サーバーがパスワード認証と keyboard-interactive 認証の両方を拒否しました。SSH ユーザー名とサーバーパスワードを確認してください。',
+      zh: '连接失败：SSH 服务器拒绝了密码和 keyboard-interactive 认证。请检查 SSH 用户名和服务器密码。',
+    );
+  }
+  if (rawMessage == SeilErrorCodes.sshPrivateKeyAuthenticationRejected) {
+    return _localizedByCode(
+      languageCode,
+      en: 'Connection failed: the SSH server rejected this private key. Check the SSH username and that the matching public key is in authorized_keys.',
+      ko: '연결 실패: SSH 서버가 이 개인 키를 거부했습니다. SSH 사용자명과 대응하는 공개 키가 서버의 authorized_keys에 등록되어 있는지 확인해 주세요.',
+      ja: '接続に失敗しました: SSH サーバーがこの秘密鍵を拒否しました。SSH ユーザー名と、対応する公開鍵が authorized_keys に登録されているか確認してください。',
+      zh: '连接失败：SSH 服务器拒绝了此私钥。请检查 SSH 用户名以及对应公钥是否已加入 authorized_keys。',
     );
   }
   final message = seilLocalizedErrorMessage(languageCode, error);

@@ -56,6 +56,8 @@ This repository follows a standard Flutter project layout.
 ```text
 lib/        Flutter application source
 android/    Android platform project
+macos/      macOS desktop platform project
+windows/    Windows desktop platform project
 linux/      Linux desktop platform project
 web/        Web platform files
 assets/     Images, fonts, and file icons
@@ -132,6 +134,71 @@ The generated APK is usually located at:
 build/app/outputs/flutter-apk/app-release.apk
 ```
 
+### Build a macOS DMG
+
+A Mac with Xcode and Flutter 3.44.6 or later is required for a local macOS build.
+
+```bash
+flutter doctor -v
+./scripts/build-macos-dmg.sh
+```
+
+The generated installer is placed at:
+
+```text
+release/macos/SEIL-v<version>-macos.dmg
+```
+
+Release builds are verified as universal binaries and run natively on both
+Apple Silicon and Intel Macs (macOS 10.15 or later).
+
+The unsigned DMG is suitable for local testing. For distribution to other Macs,
+sign and notarize it with an Apple Developer ID:
+
+```bash
+MACOS_SIGN_IDENTITY="Developer ID Application: Your Company (TEAMID)" \
+APPLE_NOTARY_KEYCHAIN_PROFILE="seil-notary" \
+./scripts/build-macos-dmg.sh
+```
+
+Without a Mac, run the **macOS DMG** workflow manually in GitHub Actions and
+download the SEIL-macOS-DMG artifact. That artifact is unsigned and intended
+for testing.
+
+### Build all platform apps
+
+The **All platform apps** workflow builds Android, macOS, and Windows on their
+native GitHub runners. Its final `SEIL-All-Platforms-v<version>` artifact
+contains exactly these three deliverables in one folder:
+
+- `SEIL-v<version>-android.apk`
+- `SEIL-v<version>-macos.dmg`
+- `SEIL-v<version>-windows.zip`
+
+Extract the Windows ZIP and run `SEIL.exe` from the extracted folder. The DLL
+and `data` files beside the executable are required and must stay together.
+
+To compare SSH responsiveness under tmux load, run the **macOS Performance
+Comparison** workflow and download its artifact. It contains two independently
+installable apps built from the same source:
+
+- `SEIL Previous Test` uses the previous shared SSH command queue.
+- `SEIL Current Test` uses the isolated monitor queue.
+
+Each test app shows its mode in a corner banner. Every two seconds it
+deliberately overlaps a full tmux monitor scan with a harmless
+interactive-priority SSH probe, then displays SCAN+INPUT current, p95, and
+maximum latency alongside terminal refresh latency. Connect both apps to the
+same host, use the same tmux workload, and compare SCAN+INPUT p95 after at
+least one minute. Quit one test app before measuring the other.
+
+If macOS blocks the unsigned test app, try opening it once, then go to
+**System Settings > Privacy & Security > Security** and choose **Open Anyway**.
+
+For SSH private-key authentication, paste the private key and enter its
+passphrase in the separate optional field. A passphrase is required only for
+an encrypted private key; it is different from the SSH account password.
+
 ### Build a Google Play App Bundle
 
 Closed testing on Google Play should use a release-signed Android App Bundle. Release builds intentionally fail when `android/key.properties` is missing so a debug-signed artifact is not uploaded by mistake.
@@ -185,9 +252,17 @@ flutter clean
 flutter pub get
 flutter test
 flutter analyze
+dart run tool/ssh_concurrency_benchmark.dart
 flutter build apk --debug
 flutter build apk --release
 ```
+
+The SSH concurrency benchmark compares the legacy shared command queue with
+the isolated monitor queue used by the current app at 1, 4, 8, 16, and 32
+simultaneous sessions. Use the interactive-command p95 value to detect tail
+latency regressions. It measures queueing delay with a simulated tmux scan;
+server and network latency still need to be checked against the target SSH
+host.
 
 ### License
 

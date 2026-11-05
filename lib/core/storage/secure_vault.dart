@@ -3,13 +3,24 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 class SecureVault {
   const SecureVault();
 
-  static const _storage = FlutterSecureStorage(
-    aOptions: AndroidOptions(encryptedSharedPreferences: true),
-    iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock_this_device),
+  static const macOsOptions = MacOsOptions(
+    accessibility: KeychainAccessibility.first_unlock_this_device,
+    useDataProtectionKeyChain: false,
   );
 
-  String connectionSecretKey(String connectionId) => 'seil.connection.$connectionId.secret';
-  String connectionPrivateKeyKey(String connectionId) => 'seil.connection.$connectionId.private_key';
+  static const _storage = FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+    iOptions: IOSOptions(
+        accessibility: KeychainAccessibility.first_unlock_this_device),
+    mOptions: macOsOptions,
+  );
+
+  String connectionSecretKey(String connectionId) =>
+      'seil.connection.$connectionId.secret';
+  String connectionPrivateKeyKey(String connectionId) =>
+      'seil.connection.$connectionId.private_key';
+  String connectionPassphraseKey(String connectionId) =>
+      'seil.connection.$connectionId.passphrase';
 
   Future<String?> read(String key) {
     return _storage.read(key: key);
@@ -31,9 +42,24 @@ class SecureVault {
     return read(connectionSecretKey(connectionId));
   }
 
+  Future<void> writeConnectionPassphrase(
+    String connectionId,
+    String passphrase,
+  ) {
+    return write(connectionPassphraseKey(connectionId), passphrase);
+  }
+
+  Future<String?> readConnectionPassphrase(String connectionId) {
+    return read(connectionPassphraseKey(connectionId));
+  }
+
+  Future<void> deleteConnectionPassphrase(String connectionId) {
+    return delete(connectionPassphraseKey(connectionId));
+  }
+
   Future<void> deleteConnectionSecrets(String connectionId) async {
     await delete(connectionSecretKey(connectionId));
     await delete(connectionPrivateKeyKey(connectionId));
+    await deleteConnectionPassphrase(connectionId);
   }
 }
-

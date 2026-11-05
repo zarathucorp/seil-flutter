@@ -6,6 +6,7 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 
+import '../../core/build_config.dart';
 import '../../core/localization/seil_error_codes.dart';
 import '../../shared/models.dart';
 import '../files/file_meta.dart';
@@ -19,6 +20,8 @@ const _tmuxPanePathMarker = '__SEIL_TMUX_PANE_PATHS__';
 const _tmuxPaneTailMarker = '__SEIL_TMUX_PANE_TAILS__';
 const _sshClosedMessage = SeilErrorCodes.reconnecting;
 const _sshConnectTimeout = Duration(seconds: 30);
+const _sftpMetadataTimeout = Duration(seconds: 12);
+const _sftpTransferTimeout = Duration(seconds: 30);
 
 enum _TmuxListSection { sessions, windows, panes, tails }
 
@@ -30,7 +33,7 @@ String buildTmuxSessionStatusCommand() {
     'printf "\\n$_tmuxPanePathMarker\\n"',
     'tmux list-panes -a -F "P$_tmuxDelimiter#{session_name}$_tmuxDelimiter#{pane_active}$_tmuxDelimiter#{pane_current_path}$_tmuxDelimiter#{pane_current_command}$_tmuxDelimiter#{pane_id}$_tmuxDelimiter#{pane_title}" 2>/dev/null || true',
     'printf "\\n$_tmuxPaneTailMarker\\n"',
-    'tmux list-panes -a -F "T$_tmuxDelimiter#{session_name}$_tmuxDelimiter#{pane_active}$_tmuxDelimiter#{pane_id}" 2>/dev/null | while IFS= read -r line; do session_name=\$(printf "%s" "\$line" | cut -d "|" -f 4); pane_active=\$(printf "%s" "\$line" | cut -d "|" -f 7); pane_id=\$(printf "%s" "\$line" | cut -d "|" -f 10); if [ "\$pane_active" = "1" ] && [ -n "\$pane_id" ]; then printf "T$_tmuxDelimiter%s$_tmuxDelimiter%s\\n" "\$session_name" "\$pane_id"; tmux capture-pane -t "\$pane_id" -p -S -10 2>/dev/null | sed "s/^/R$_tmuxDelimiter/"; printf "E$_tmuxDelimiter%s\\n" "\$session_name"; fi; done',
+    'tmux list-panes -a -F "T$_tmuxDelimiter#{session_name}$_tmuxDelimiter#{pane_active}$_tmuxDelimiter#{pane_id}" 2>/dev/null | while IFS="|" read -r marker d1 d2 session_name d3 d4 pane_active d5 d6 pane_id; do if [ "\$pane_active" = "1" ] && [ -n "\$pane_id" ]; then printf "T$_tmuxDelimiter%s$_tmuxDelimiter%s\\n" "\$session_name" "\$pane_id"; tmux capture-pane -t "\$pane_id" -p -S -10 2>/dev/null | sed "s/^/R$_tmuxDelimiter/"; printf "E$_tmuxDelimiter%s\\n" "\$session_name"; fi; done',
   ].join('; ');
 }
 
@@ -38,6 +41,7 @@ abstract class SshSessionService {
   Future<LiveSshSession> connect({
     required SavedConnection connection,
     required String secret,
+    String? passphrase,
   });
 }
 
@@ -46,11 +50,15 @@ class DartSshSessionService implements SshSessionService {
   Future<LiveSshSession> connect({
     required SavedConnection connection,
     required String secret,
+    String? passphrase,
   }) async {
     if (connection.authMode == AuthMode.agent) {
       throw StateError(SeilErrorCodes.sshAgentUnsupported);
     }
 
+    final identities = connection.authMode == AuthMode.privateKey
+        ? parseSshPrivateKey(secret, passphrase)
+        : null;
     late final SSHSocket socket;
     try {
       socket = await SSHSocket.connect(
@@ -67,20 +75,37 @@ class DartSshSessionService implements SshSessionService {
       keepAliveInterval: const Duration(seconds: 10),
       onPasswordRequest:
           connection.authMode == AuthMode.password ? () => secret : null,
-      identities: connection.authMode == AuthMode.privateKey
-          ? SSHKeyPair.fromPem(secret)
+      onUserInfoRequest: connection.authMode == AuthMode.password
+          ? (request) => sshKeyboardInteractivePasswordResponses(
+                request.prompts.map((prompt) => prompt.echo).toList(),
+                secret,
+              )
           : null,
+      identities: identities,
     );
+    final commandQueue = SshCommandQueue();
+    final interactiveCommandQueue =
+        seilLegacySharedSshQueue ? commandQueue : SshCommandQueue();
     final session = LiveSshSession._(
       client: client,
       connection: connection,
-      commandQueue: SshCommandQueue(),
+      commandQueue: commandQueue,
+      interactiveCommandQueue: interactiveCommandQueue,
+      monitorCommandQueue:
+          seilLegacySharedSshQueue ? commandQueue : SshCommandQueue(),
     );
     try {
       await session.initialize().timeout(_sshConnectTimeout);
     } on TimeoutException {
       session.close();
       throw StateError(SeilErrorCodes.sshInitializationTimeout);
+    } on SSHAuthFailError {
+      session.close();
+      throw StateError(
+        connection.authMode == AuthMode.privateKey
+            ? SeilErrorCodes.sshPrivateKeyAuthenticationRejected
+            : SeilErrorCodes.sshPasswordAuthenticationRejected,
+      );
     } catch (_) {
       session.close();
       rethrow;
@@ -89,25 +114,55 @@ class DartSshSessionService implements SshSessionService {
   }
 }
 
+List<String>? sshKeyboardInteractivePasswordResponses(
+  List<bool> promptEchoes,
+  String password,
+) {
+  if (promptEchoes.isEmpty) {
+    return const [];
+  }
+  if (promptEchoes.length != 1 || promptEchoes.single) {
+    return null;
+  }
+  return [password];
+}
+
+List<SSHKeyPair> parseSshPrivateKey(String privateKey, String? passphrase) {
+  final effectivePassphrase =
+      passphrase == null || passphrase.isEmpty ? null : passphrase;
+  if (SSHKeyPair.isEncryptedPem(privateKey) && effectivePassphrase == null) {
+    throw StateError(SeilErrorCodes.privateKeyPassphraseRequired);
+  }
+  return SSHKeyPair.fromPem(privateKey, effectivePassphrase);
+}
+
 class LiveSshSession {
   LiveSshSession._({
     required this.client,
     required this.connection,
     required SshCommandQueue commandQueue,
+    required SshCommandQueue interactiveCommandQueue,
+    required SshCommandQueue monitorCommandQueue,
   })  : id = const Uuid().v4(),
-        _commandQueue = commandQueue;
+        _commandQueue = commandQueue,
+        _interactiveCommandQueue = interactiveCommandQueue,
+        _monitorCommandQueue = monitorCommandQueue;
 
   LiveSshSession.testing({
     required this.client,
     required this.connection,
     String? id,
   })  : id = id ?? const Uuid().v4(),
-        _commandQueue = SshCommandQueue();
+        _commandQueue = SshCommandQueue(),
+        _interactiveCommandQueue = SshCommandQueue(),
+        _monitorCommandQueue = SshCommandQueue();
 
   final String id;
   final SSHClient client;
   final SavedConnection connection;
   final SshCommandQueue _commandQueue;
+  final SshCommandQueue _interactiveCommandQueue;
+  final SshCommandQueue _monitorCommandQueue;
   late final String hostName;
   late final String homePath;
   late final bool tmuxAvailable;
@@ -178,9 +233,26 @@ class LiveSshSession {
     SshCommandPriority priority = SshCommandPriority.foreground,
     String? coalescingKey,
   }) async {
-    return _commandQueue.run(
+    final queue = priority == SshCommandPriority.interactive
+        ? _interactiveCommandQueue
+        : _commandQueue;
+    return queue.run(
       () => _executeCommand(command),
       priority: priority,
+      coalescingKey: coalescingKey,
+    );
+  }
+
+  /// Runs a full-workspace status scan without blocking terminal input or
+  /// foreground pane capture. The monitor queue is shared by all terminal
+  /// workspaces backed by this SSH client, so only one scan runs at a time.
+  Future<String> runMonitorCommand(
+    String command, {
+    String? coalescingKey,
+  }) async {
+    return _monitorCommandQueue.run(
+      () => _executeCommand(command),
+      priority: SshCommandPriority.background,
       coalescingKey: coalescingKey,
     );
   }
@@ -191,7 +263,10 @@ class LiveSshSession {
     SshCommandPriority priority = SshCommandPriority.foreground,
     String? coalescingKey,
   }) async {
-    return _commandQueue.run(
+    final queue = priority == SshCommandPriority.interactive
+        ? _interactiveCommandQueue
+        : _commandQueue;
+    return queue.run(
       () async {
         if (client.isClosed) {
           throw StateError(_sshClosedMessage);
@@ -211,6 +286,27 @@ class LiveSshSession {
       priority: priority,
       coalescingKey: coalescingKey,
     );
+  }
+
+  Future<int> measureInteractiveLatencyDuringMonitorScan() async {
+    final monitorScan = runMonitorCommand(
+      buildTmuxSessionStatusCommand(),
+      coalescingKey: 'tmux-session-status',
+    );
+    await Future<void>.delayed(Duration.zero);
+    final stopwatch = Stopwatch()..start();
+    int? latencyMs;
+    try {
+      await runCommand(
+        "printf ''",
+        priority: SshCommandPriority.interactive,
+      );
+      stopwatch.stop();
+      latencyMs = stopwatch.elapsedMilliseconds;
+    } finally {
+      await monitorScan;
+    }
+    return latencyMs;
   }
 
   Stream<TmuxAttentionSignal>? startTmuxControlModeObserver() {
@@ -593,9 +689,8 @@ class LiveSshSession {
       return const [];
     }
 
-    final output = await runCommand(
+    final output = await runMonitorCommand(
       buildTmuxSessionStatusCommand(),
-      priority: SshCommandPriority.background,
       coalescingKey: 'tmux-session-status',
     );
     final panePaths = <String, String>{};
@@ -919,6 +1014,8 @@ class LiveSshSession {
       client: client,
       connection: connection,
       commandQueue: _commandQueue,
+      interactiveCommandQueue: _interactiveCommandQueue,
+      monitorCommandQueue: _monitorCommandQueue,
     );
     session.hostName = hostName;
     session.homePath = homePath;
@@ -982,47 +1079,62 @@ class LiveSshSession {
     return client.ping();
   }
 
-  Future<RemoteDirectory> listDirectory(String remotePath) async {
-    final sftpClient = await sftp();
-    final normalized = _normalizeRemoteDirectory(remotePath);
-    final stats = await sftpClient.stat(normalized);
-    if (!stats.isDirectory) {
-      throw StateError(SeilErrorCodes.directoryPathRequired);
+  Future<T> _runSftpOperation<T>(
+    Future<T> Function(SftpClient client) operation, {
+    Duration timeout = _sftpMetadataTimeout,
+  }) async {
+    try {
+      final sftpClient = await sftp().timeout(timeout);
+      return await operation(sftpClient).timeout(timeout);
+    } on TimeoutException {
+      _sftp?.close();
+      _sftp = null;
+      throw StateError(SeilErrorCodes.sftpOperationTimeout);
     }
+  }
 
-    final items = await sftpClient.listdir(normalized);
-    final entries = items
-        .where((item) => item.filename != '.' && item.filename != '..')
-        .map((item) {
-      final fullPath = p.posix.join(normalized, item.filename);
-      final kind = item.attr.isDirectory ? 'dir' : 'file';
-      final meta = inferFileMeta(fullPath, kind);
-      return RemoteFileEntry(
-        kind: kind,
-        name: item.filename,
-        path: fullPath,
-        size: item.attr.size,
-        modifiedAt: _unixSecondsToDate(item.attr.modifyTime),
-        createdAt: _unixSecondsToDate(item.attr.accessTime),
-        previewKind: meta.previewKind,
-        typeLabel: meta.typeLabel,
-        language: meta.language,
-        iconName: meta.iconName,
+  Future<RemoteDirectory> listDirectory(String remotePath) async {
+    return _runSftpOperation((sftpClient) async {
+      final normalized = _normalizeRemoteDirectory(remotePath);
+      final stats = await sftpClient.stat(normalized);
+      if (!stats.isDirectory) {
+        throw StateError(SeilErrorCodes.directoryPathRequired);
+      }
+
+      final items = await sftpClient.listdir(normalized);
+      final entries = items
+          .where((item) => item.filename != '.' && item.filename != '..')
+          .map((item) {
+        final fullPath = p.posix.join(normalized, item.filename);
+        final kind = item.attr.isDirectory ? 'dir' : 'file';
+        final meta = inferFileMeta(fullPath, kind);
+        return RemoteFileEntry(
+          kind: kind,
+          name: item.filename,
+          path: fullPath,
+          size: item.attr.size,
+          modifiedAt: _unixSecondsToDate(item.attr.modifyTime),
+          createdAt: _unixSecondsToDate(item.attr.accessTime),
+          previewKind: meta.previewKind,
+          typeLabel: meta.typeLabel,
+          language: meta.language,
+          iconName: meta.iconName,
+        );
+      }).toList()
+        ..sort((left, right) {
+          if (left.isDirectory != right.isDirectory) {
+            return left.isDirectory ? -1 : 1;
+          }
+          return left.name.toLowerCase().compareTo(right.name.toLowerCase());
+        });
+
+      currentPath = normalized;
+      return RemoteDirectory(
+        currentPath: normalized,
+        parentPath: normalized == '/' ? null : p.posix.dirname(normalized),
+        entries: entries,
       );
-    }).toList()
-      ..sort((left, right) {
-        if (left.isDirectory != right.isDirectory) {
-          return left.isDirectory ? -1 : 1;
-        }
-        return left.name.toLowerCase().compareTo(right.name.toLowerCase());
-      });
-
-    currentPath = normalized;
-    return RemoteDirectory(
-      currentPath: normalized,
-      parentPath: normalized == '/' ? null : p.posix.dirname(normalized),
-      entries: entries,
-    );
+    });
   }
 
   Future<void> createDirectory(String parentPath, String name) async {
@@ -1046,14 +1158,15 @@ class LiveSshSession {
 
   Future<RemoteTextFile> readTextFile(String remotePath,
       {int maxBytes = maxPreviewBytes}) async {
-    final sftpClient = await sftp();
-    final stat = await sftpClient.stat(remotePath);
-    if ((stat.size ?? 0) > maxBytes) {
+    return _runSftpOperation((sftpClient) async {
+      final stat = await sftpClient.stat(remotePath);
+      if ((stat.size ?? 0) > maxBytes) {
+        final bytes = await _readFileBytes(sftpClient, remotePath, maxBytes);
+        return _mapTextFile(remotePath, bytes, stat, truncated: true);
+      }
       final bytes = await _readFileBytes(sftpClient, remotePath, maxBytes);
-      return _mapTextFile(remotePath, bytes, stat, truncated: true);
-    }
-    final bytes = await _readFileBytes(sftpClient, remotePath, maxBytes);
-    return _mapTextFile(remotePath, bytes, stat, truncated: false);
+      return _mapTextFile(remotePath, bytes, stat, truncated: false);
+    });
   }
 
   Future<void> writeTextFile(String remotePath, String content) async {
@@ -1071,8 +1184,10 @@ class LiveSshSession {
   }
 
   Future<Uint8List> downloadBytes(String remotePath) async {
-    final sftpClient = await sftp();
-    return _readFileBytes(sftpClient, remotePath, null);
+    return _runSftpOperation(
+      (sftpClient) => _readFileBytes(sftpClient, remotePath, null),
+      timeout: _sftpTransferTimeout,
+    );
   }
 
   Future<void> uploadBytes(

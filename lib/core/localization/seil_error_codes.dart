@@ -13,8 +13,15 @@ abstract final class SeilErrorCodes {
       'seil.error.hostKeyFingerprintInvalid';
   static const hostKeyNotFound = 'seil.error.hostKeyNotFound';
   static const missingSshSecret = 'seil.error.missingSshSecret';
+  static const privateKeyPassphraseRequired =
+      'seil.error.privateKeyPassphraseRequired';
   static const sshSocketTimeout = 'seil.error.sshSocketTimeout';
   static const sshInitializationTimeout = 'seil.error.sshInitializationTimeout';
+  static const sshPasswordAuthenticationRejected =
+      'seil.error.sshPasswordAuthenticationRejected';
+  static const sshPrivateKeyAuthenticationRejected =
+      'seil.error.sshPrivateKeyAuthenticationRejected';
+  static const sftpOperationTimeout = 'seil.error.sftpOperationTimeout';
   static const sshAgentUnsupported = 'seil.error.sshAgentUnsupported';
   static const directoryPathRequired = 'seil.error.directoryPathRequired';
   static const invalidFolderName = 'seil.error.invalidFolderName';

@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
+import 'package:dartssh2/dartssh2.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
@@ -56,6 +57,12 @@ class ConnectionRepository {
 
     if (hasStoredSecret) {
       await vault.writeConnectionSecret(id, input.secret);
+      if (input.authMode == AuthMode.privateKey &&
+          input.passphrase.isNotEmpty) {
+        await vault.writeConnectionPassphrase(id, input.passphrase);
+      } else {
+        await vault.deleteConnectionPassphrase(id);
+      }
     } else {
       await vault.deleteConnectionSecrets(id);
     }
@@ -79,6 +86,38 @@ class ConnectionRepository {
       return transientSecret;
     }
     return vault.readConnectionSecret(connection.id);
+  }
+
+  Future<String?> resolvePassphrase(
+    SavedConnection connection, [
+    String? transientPassphrase,
+  ]) async {
+    if (transientPassphrase != null) {
+      return transientPassphrase;
+    }
+    return vault.readConnectionPassphrase(connection.id);
+  }
+
+  Future<bool> storedPrivateKeyNeedsPassphrase(
+    SavedConnection connection,
+  ) async {
+    if (connection.authMode != AuthMode.privateKey ||
+        !connection.hasStoredSecret) {
+      return false;
+    }
+    final privateKey = await vault.readConnectionSecret(connection.id);
+    if (privateKey == null || privateKey.isEmpty) {
+      return false;
+    }
+    try {
+      if (!SSHKeyPair.isEncryptedPem(privateKey)) {
+        return false;
+      }
+    } catch (_) {
+      return false;
+    }
+    final passphrase = await vault.readConnectionPassphrase(connection.id);
+    return passphrase == null || passphrase.isEmpty;
   }
 
   Future<void> deleteConnection(String id) async {

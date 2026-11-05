@@ -397,6 +397,7 @@ class SshConnectionInput {
     required this.tmuxHistoryLimit,
     required this.secret,
     required this.saveSecret,
+    this.passphrase = '',
   });
 
   final String label;
@@ -407,6 +408,7 @@ class SshConnectionInput {
   final int tmuxHistoryLimit;
   final String secret;
   final bool saveSecret;
+  final String passphrase;
 }
 
 class RemoteSession {
