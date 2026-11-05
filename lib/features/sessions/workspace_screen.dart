@@ -46,6 +46,9 @@ const _terminalBottomPaddingLines = '\n\n\n\n';
 const _terminalAutoScrollBottomTolerance = 24.0;
 const tmuxBackgroundRefreshInterval = Duration(seconds: 2);
 
+const _tmuxTabMinWidth = 32.0;
+const _tmuxTabMaxWidth = 168.0;
+
 const _tmuxTabLabelStyle = TextStyle(
   fontSize: 12,
   fontWeight: FontWeight.w800,
@@ -72,7 +75,9 @@ double tmuxTabWidthForLabel(
   )..layout();
   // 14px horizontal padding + 2px border, plus a little slack so glyph
   // rounding never triggers the ellipsis.
-  return (painter.width.ceilToDouble() + 20).clamp(32.0, 168.0).toDouble();
+  return (painter.width.ceilToDouble() + 20)
+      .clamp(_tmuxTabMinWidth, _tmuxTabMaxWidth)
+      .toDouble();
 }
 
 class _WorkspacePerformance extends InheritedWidget {
@@ -1185,7 +1190,6 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
                         child: _SessionNumberButton(
                           key: ValueKey('${session.name}\u0000$label'),
                           label: label,
-                          width: tabWidthsByName[session.name] ?? 32,
                           selected: selected,
                           attentionState: session.attentionState,
                           onRename: () => unawaited(
@@ -1397,7 +1401,6 @@ class _SessionNumberButton extends StatefulWidget {
   const _SessionNumberButton({
     super.key,
     required this.label,
-    required this.width,
     required this.selected,
     required this.attentionState,
     required this.onRename,
@@ -1405,7 +1408,6 @@ class _SessionNumberButton extends StatefulWidget {
   });
 
   final String label;
-  final double width;
   final bool selected;
   final TerminalAttentionState attentionState;
   final VoidCallback onRename;
@@ -1465,10 +1467,14 @@ class _SessionNumberButtonState extends State<_SessionNumberButton>
             return AnimatedContainer(
               duration: const Duration(milliseconds: 120),
               curve: Curves.easeOut,
-              width: widget.width,
+              // Size to the rendered label instead of a pre-measured width so
+              // labels such as "30" are never ellipsized into an empty tab.
+              constraints: const BoxConstraints(
+                minWidth: _tmuxTabMinWidth,
+                maxWidth: _tmuxTabMaxWidth,
+              ),
               height: 30,
               padding: const EdgeInsets.symmetric(horizontal: 7),
-              alignment: Alignment.center,
               decoration: BoxDecoration(
                 color: style.fill,
                 border: Border.all(color: style.border),
@@ -1483,12 +1489,17 @@ class _SessionNumberButtonState extends State<_SessionNumberButton>
                         ),
                       ],
               ),
-              child: Text(
-                widget.label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.center,
-                style: _tmuxTabLabelStyle.copyWith(color: style.foreground),
+              // widthFactor keeps the tab as narrow as its label (the
+              // container's minWidth still applies) while centering it.
+              child: Align(
+                widthFactor: 1,
+                child: Text(
+                  widget.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: _tmuxTabLabelStyle.copyWith(color: style.foreground),
+                ),
               ),
             );
           },
