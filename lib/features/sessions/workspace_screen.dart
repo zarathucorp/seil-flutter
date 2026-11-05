@@ -46,19 +46,33 @@ const _terminalBottomPaddingLines = '\n\n\n\n';
 const _terminalAutoScrollBottomTolerance = 24.0;
 const tmuxBackgroundRefreshInterval = Duration(seconds: 2);
 
-double tmuxTabWidthForLabel(String label) {
+const _tmuxTabLabelStyle = TextStyle(
+  fontSize: 12,
+  fontWeight: FontWeight.w800,
+  height: 1,
+);
+
+/// Width of a tmux tab button for [label].
+///
+/// The label must be measured with the same font family and text scale the
+/// button renders with; otherwise (e.g. Pretendard vs. the default font, or
+/// an enlarged system font size on Android) the measured width is too small
+/// and labels such as "30" or "hello" get cut off.
+double tmuxTabWidthForLabel(
+  String label, {
+  TextStyle? baseStyle,
+  TextScaler textScaler = TextScaler.noScaling,
+}) {
+  final style = (baseStyle ?? const TextStyle()).merge(_tmuxTabLabelStyle);
   final painter = TextPainter(
-    text: TextSpan(
-      text: label,
-      style: const TextStyle(
-        fontSize: 12,
-        fontWeight: FontWeight.w800,
-      ),
-    ),
+    text: TextSpan(text: label, style: style),
     maxLines: 1,
     textDirection: TextDirection.ltr,
+    textScaler: textScaler,
   )..layout();
-  return (painter.width + 16).clamp(32.0, 168.0).toDouble();
+  // 14px horizontal padding + 2px border, plus a little slack so glyph
+  // rounding never triggers the ellipsis.
+  return (painter.width.ceilToDouble() + 20).clamp(32.0, 168.0).toDouble();
 }
 
 class _WorkspacePerformance extends InheritedWidget {
@@ -1104,10 +1118,14 @@ class _SessionNumberBarState extends State<_SessionNumberBar> {
             : storedCustomNamesByName[session.name],
     };
     _scheduleDefaultNameCleanup(active, redundantDefaultNames);
+    final tabLabelBaseStyle = DefaultTextStyle.of(context).style;
+    final tabLabelTextScaler = MediaQuery.textScalerOf(context);
     final tabWidthsByName = <String, double>{
       for (final session in sessions)
         session.name: tmuxTabWidthForLabel(
           customNamesByName[session.name] ?? labelsByName[session.name] ?? '',
+          baseStyle: tabLabelBaseStyle,
+          textScaler: tabLabelTextScaler,
         ),
     };
     return SizedBox(
@@ -1470,12 +1488,7 @@ class _SessionNumberButtonState extends State<_SessionNumberButton>
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: style.foreground,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w800,
-                  height: 1,
-                ),
+                style: _tmuxTabLabelStyle.copyWith(color: style.foreground),
               ),
             );
           },
