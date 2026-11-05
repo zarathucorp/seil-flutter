@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:seil_mobile/features/sessions/ssh_session_service.dart';
 import 'package:seil_mobile/features/sessions/workspace_screen.dart';
@@ -31,6 +32,16 @@ void main() {
     expect(mediumWidth, lessThan(longWidth));
     expect(tmuxTabWidthForLabel('흥'), shortWidth);
     expect(longWidth, lessThanOrEqualTo(168));
+  });
+
+  test('tmux tab width grows with the system text scale', () {
+    final normal = tmuxTabWidthForLabel('hello');
+    final enlarged = tmuxTabWidthForLabel(
+      'hello',
+      textScaler: const TextScaler.linear(1.3),
+    );
+
+    expect(enlarged, greaterThan(normal));
   });
 
   test('background tmux status refresh remains fixed at two seconds', () {
